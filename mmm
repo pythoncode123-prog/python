@@ -51,61 +51,106 @@ class ConfluenceReporter:
         df_grouped = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
         df_top4 = df_grouped.nlargest(4, 'TOTAL_JOBS')
         df_top4['Base Line'] = 1889206
+        df_top4['Variation'] = df_top4['Base Line'] - df_top4['TOTAL_JOBS']
         return df_top4, df
         
     def generate_table_and_chart(self, df: pd.DataFrame) -> str:
-        table_rows = ["<tr><th>DATE</th><th>Baseline</th><th>Total Jobs</th></tr>"]
+        # First, create the table rows
+        table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Total Jobs</th><th>Variation</th></tr>"]
         for _, row in df.iterrows():
             table_rows.append(
-                f"<tr><td>{row['DATE'].strftime('%Y-%m-%d')}</td><td>{row['Base Line']:,}</td><td>{row['TOTAL_JOBS']:,}</td></tr>"
+                f"<tr><td>{row['DATE'].strftime('%m/%d/%Y')}</td><td>{int(row['Base Line']):,}</td><td>{int(row['TOTAL_JOBS']):,}</td><td>{int(row['Variation']):,}</td></tr>"
             )
-        return f"""
-<ac:structured-macro ac:name="table-chart">
+        
+        table_html = f"""
+<table class="wrapped">
+    <colgroup>
+        <col/>
+        <col/>
+        <col/>
+        <col/>
+    </colgroup>
+    <tbody>{''.join(table_rows)}</tbody>
+</table>
+"""
+        
+        # Then the chart
+        chart_rows = ["<tr><th>DATE</th><th>Base Line</th><th>TOTAL_JOBS</th></tr>"]
+        for _, row in df.iterrows():
+            chart_rows.append(
+                f"<tr><td>{row['DATE'].strftime('%m/%d/%Y')}</td><td>{int(row['Base Line'])}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>"
+            )
+            
+        chart_html = f"""
+<ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="type">column</ac:parameter>
-    <ac:parameter ac:name="is3d">true</ac:parameter>
     <ac:parameter ac:name="title">4th Peak of the Month</ac:parameter>
+    <ac:parameter ac:name="width">800</ac:parameter>
+    <ac:parameter ac:name="height">400</ac:parameter>
+    <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
-    <ac:parameter ac:name="dataorientation">vertical</ac:parameter>
-    <ac:parameter ac:name="columns">Baseline,Total Jobs</ac:parameter>
     <ac:rich-text-body>
-        <table class="wrapped">
-            <colgroup><col/><col/></colgroup>
-            <tbody>{''.join(table_rows)}</tbody>
+        <table>
+            <tbody>{''.join(chart_rows)}</tbody>
         </table>
     </ac:rich-text-body>
 </ac:structured-macro>
 """
+        return table_html + "\n" + chart_html
 
     def generate_region_chart(self, df: pd.DataFrame) -> str:
         if not {'DATE', 'REGION', 'TOTAL_JOBS'}.issubset(df.columns):
             return ""
+            
         df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
-        df['DATE'] = df['DATE'].dt.strftime('%Y-%m-%d')
-        pivot_df = df.pivot_table(index='DATE', columns='REGION', values='TOTAL_JOBS', aggfunc='sum')
-        table_rows = [f"<tr><th>DATE</th>{{''.join(f'<th>{col}</th>' for col in pivot_df.columns)}}</tr>"]
-        for _, row in pivot_df.iterrows():
-            cells = [f"<td>{row['DATE']}</td>"] + [f"<td>{int(row[col]):,}</td>" for col in pivot_df.columns]
-            table_rows.append(f"<tr>{''.join(cells)}</tr>")
-        return f"""
-<ac:structured-macro ac:name="table-chart">
+        df['DATE'] = df['DATE'].dt.strftime('%m/%d/%Y')
+        
+        try:
+            pivot_df = df.pivot_table(index='DATE', columns='REGION', values='TOTAL_JOBS', aggfunc='sum')
+            
+            # Build header row and column headers separately to avoid the 'col' not defined error
+            header_cells = []
+            for column in pivot_df.columns:
+                header_cells.append(f"<th>{column}</th>")
+            header_row = f"<tr><th>DATE</th>{''.join(header_cells)}</tr>"
+            
+            # Now build data rows
+            data_rows = []
+            for date_idx, row in pivot_df.iterrows():
+                cells = [f"<td>{date_idx}</td>"]
+                for column in pivot_df.columns:
+                    if pd.notna(row[column]):
+                        cells.append(f"<td>{int(row[column]):,}</td>")
+                    else:
+                        cells.append("<td>0</td>")
+                data_rows.append(f"<tr>{''.join(cells)}</tr>")
+            
+            all_rows = [header_row] + data_rows
+            
+            return f"""
+<h2>Total Jobs by Region</h2>
+<ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="type">column</ac:parameter>
-    <ac:parameter ac:name="is3d">true</ac:parameter>
     <ac:parameter ac:name="title">Total Jobs by Region per Date</ac:parameter>
+    <ac:parameter ac:name="width">800</ac:parameter>
+    <ac:parameter ac:name="height">400</ac:parameter>
+    <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
-    <ac:parameter ac:name="dataorientation">vertical</ac:parameter>
     <ac:rich-text-body>
-        <table class="wrapped">
-            <colgroup>{''.join(f'<col/>' for _ in pivot_df.columns)}</colgroup>
-            <tbody>{''.join(table_rows)}</tbody>
+        <table>
+            <tbody>{''.join(all_rows)}</tbody>
         </table>
     </ac:rich-text-body>
 </ac:structured-macro>
 """
+        except Exception as e:
+            logger.error(f"Error generating region chart: {str(e)}")
+            return ""
 
     def generate_daily_summary_table(self, df: pd.DataFrame) -> str:
         df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
         df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
-        df_summary['DATE'] = df_summary['DATE'].dt.strftime('%Y-%m-%d')
+        df_summary['DATE'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
         rows = ["<tr><th>Date</th><th>Sum of TOTAL_JOBS</th></tr>"]
         for _, row in df_summary.iterrows():
             rows.append(f"<tr><td>{row['DATE']}</td><td>{int(row['TOTAL_JOBS']):,}</td></tr>")
@@ -114,21 +159,19 @@ class ConfluenceReporter:
     def generate_daily_trend_chart(self, df: pd.DataFrame) -> str:
         df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
         df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
-        df_summary['DATE'] = df_summary['DATE'].dt.strftime('%Y-%m-%d')
+        df_summary['DATE'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
         rows = ["<tr><th>Date</th><th>Peaks</th></tr>"]
         for _, row in df_summary.iterrows():
             rows.append(f"<tr><td>{row['DATE']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
         return f"""
-<ac:structured-macro ac:name="table-chart">
-    <ac:parameter ac:name="type">timeLine</ac:parameter>
-    <ac:parameter ac:name="is3d">false</ac:parameter>
+<h2>Daily Job Volume Trend</h2>
+<ac:structured-macro ac:name="chart">
+    <ac:parameter ac:name="type">timeSeries</ac:parameter>
     <ac:parameter ac:name="title">Daily Job Volume Trend</ac:parameter>
-    <ac:parameter ac:name="legend">false</ac:parameter>
-    <ac:parameter ac:name="dataorientation">vertical</ac:parameter>
-    <ac:parameter ac:name="columns">Peaks</ac:parameter>
+    <ac:parameter ac:name="width">800</ac:parameter>
+    <ac:parameter ac:name="height">400</ac:parameter>
     <ac:rich-text-body>
-        <table class="wrapped">
-            <colgroup><col/><col/></colgroup>
+        <table>
             <tbody>{''.join(rows)}</tbody>
         </table>
     </ac:rich-text-body>
@@ -140,7 +183,7 @@ class ConfluenceReporter:
         max_range = 2000000
         df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
         df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
-        df_summary['DATE'] = df_summary['DATE'].dt.strftime('%Y-%m-%d')
+        df_summary['DATE'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
         df_summary['Baseline'] = baseline
         df_summary['Max Range'] = max_range
         df_summary['Variation'] = df_summary['Baseline'] - df_summary['TOTAL_JOBS']
@@ -155,17 +198,16 @@ class ConfluenceReporter:
         df_market = df.groupby('Country/Market', as_index=False)['TaskCount'].sum().sort_values(by='TaskCount', ascending=False)
         rows = ["<tr><th>Country/Market</th><th>TaskCount</th></tr>"]
         for _, row in df_market.iterrows():
-            rows.append(f"<tr><td>{row['Country/Market']}</td><td>{int(row['TaskCount']):,}</td></tr>")
+            rows.append(f"<tr><td>{row['Country/Market']}</td><td>{int(row['TaskCount'])}</td></tr>")
         return f"""
-<ac:structured-macro ac:name="table-chart">
+<h2>Task Count by Country/Market</h2>
+<ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="type">column</ac:parameter>
-    <ac:parameter ac:name="is3d">false</ac:parameter>
     <ac:parameter ac:name="title">Task Count by Country/Market</ac:parameter>
-    <ac:parameter ac:name="legend">false</ac:parameter>
-    <ac:parameter ac:name="dataorientation">vertical</ac:parameter>
+    <ac:parameter ac:name="width">800</ac:parameter>
+    <ac:parameter ac:name="height">400</ac:parameter>
     <ac:rich-text-body>
-        <table class="wrapped">
-            <colgroup><col/><col/></colgroup>
+        <table>
             <tbody>{''.join(rows)}</tbody>
         </table>
     </ac:rich-text-body>
@@ -198,7 +240,7 @@ class ConfluenceReporter:
 <p><em>Note: This report shows the top 4 dates with highest total jobs compared to baseline.</em></p>
 """.format(
             now=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
-            user='satish537',  # Added your username here
+            user='satish537',
             table_and_chart=self.generate_table_and_chart(df_top4),
             region_chart=self.generate_region_chart(full_df),
             daily_table=self.generate_daily_summary_table(full_df),
@@ -249,40 +291,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-def generate_region_chart(self, df: pd.DataFrame) -> str:
-    if not {'DATE', 'REGION', 'TOTAL_JOBS'}.issubset(df.columns):
-        return ""
-    df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
-    df['DATE'] = df['DATE'].dt.strftime('%Y-%m-%d')
-    pivot_df = df.pivot_table(index='DATE', columns='REGION', values='TOTAL_JOBS', aggfunc='sum')
-    
-    # This is the problematic line, let's fix it
-    column_headers = "".join([f"<th>{column}</th>" for column in pivot_df.columns])
-    table_rows = [f"<tr><th>DATE</th>{column_headers}</tr>"]
-    
-    for idx, row in pivot_df.iterrows():
-        cells = [f"<td>{idx}</td>"]  # Use idx directly since that's the DATE
-        for column in pivot_df.columns:
-            value = row[column]
-            if pd.notna(value):
-                cells.append(f"<td>{int(value):,}</td>")
-            else:
-                cells.append("<td>0</td>")
-        table_rows.append(f"<tr>{''.join(cells)}</tr>")
-    
-    return f"""
-<ac:structured-macro ac:name="table-chart">
-    <ac:parameter ac:name="type">column</ac:parameter>
-    <ac:parameter ac:name="is3d">true</ac:parameter>
-    <ac:parameter ac:name="title">Total Jobs by Region per Date</ac:parameter>
-    <ac:parameter ac:name="legend">true</ac:parameter>
-    <ac:parameter ac:name="dataorientation">vertical</ac:parameter>
-    <ac:rich-text-body>
-        <table class="wrapped">
-            <colgroup>{''.join(f"<col/>" for _ in range(len(pivot_df.columns) + 1))}</colgroup>
-            <tbody>{''.join(table_rows)}</tbody>
-        </table>
-    </ac:rich-text-body>
-</ac:structured-macro>
-"""
