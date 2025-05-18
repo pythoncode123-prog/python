@@ -249,3 +249,40 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+def generate_region_chart(self, df: pd.DataFrame) -> str:
+    if not {'DATE', 'REGION', 'TOTAL_JOBS'}.issubset(df.columns):
+        return ""
+    df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
+    df['DATE'] = df['DATE'].dt.strftime('%Y-%m-%d')
+    pivot_df = df.pivot_table(index='DATE', columns='REGION', values='TOTAL_JOBS', aggfunc='sum')
+    
+    # This is the problematic line, let's fix it
+    column_headers = "".join([f"<th>{column}</th>" for column in pivot_df.columns])
+    table_rows = [f"<tr><th>DATE</th>{column_headers}</tr>"]
+    
+    for idx, row in pivot_df.iterrows():
+        cells = [f"<td>{idx}</td>"]  # Use idx directly since that's the DATE
+        for column in pivot_df.columns:
+            value = row[column]
+            if pd.notna(value):
+                cells.append(f"<td>{int(value):,}</td>")
+            else:
+                cells.append("<td>0</td>")
+        table_rows.append(f"<tr>{''.join(cells)}</tr>")
+    
+    return f"""
+<ac:structured-macro ac:name="table-chart">
+    <ac:parameter ac:name="type">column</ac:parameter>
+    <ac:parameter ac:name="is3d">true</ac:parameter>
+    <ac:parameter ac:name="title">Total Jobs by Region per Date</ac:parameter>
+    <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="dataorientation">vertical</ac:parameter>
+    <ac:rich-text-body>
+        <table class="wrapped">
+            <colgroup>{''.join(f"<col/>" for _ in range(len(pivot_df.columns) + 1))}</colgroup>
+            <tbody>{''.join(table_rows)}</tbody>
+        </table>
+    </ac:rich-text-body>
+</ac:structured-macro>
+"""
