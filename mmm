@@ -1,0 +1,201 @@
+import requests
+from requests.auth import HTTPBasicAuth
+import pandas as pd
+import json
+import urllib3
+import os
+from datetime import datetime
+import logging
+from typing import Tuple, Optional
+from pathlib import Path
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('confluence_update.log'),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+class ConfluenceReporter:
+    def __init__(self, config_path: str = "config.json"):
+        self.config = self._load_config(config_path)
+        self.session = self._create_session()
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    def _load_config(self, config_path: str) -> dict:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        required_keys = ['CONFLUENCE_URL', 'USERNAME', 'API_TOKEN', 'SPACE_KEY', 'PAGE_TITLE', 'CSV_FILE']
+        if not all(key in config for key in required_keys):
+            raise ValueError(f"Missing required configuration keys. Required: {required_keys}")
+        return config
+
+    def _create_session(self) -> requests.Session:
+        session = requests.Session()
+        session.auth = HTTPBasicAuth(self.config['USERNAME'], self.config['API_TOKEN'])
+        session.headers.update({
+            "Content-Type": "application/json",
+            "X-Atlassian-Token": "no-check"
+        })
+        return session
+
+    def _load_and_process_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        df = pd.read_csv(self.config['CSV_FILE'], parse_dates=['DATE'], dayfirst=True)
+        df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
+        df_summary = df.groupby(['DATE']).agg({'TOTAL_JOBS': 'sum'}).reset_index()
+        df_grouped = df.groupby(['DATE', 'Country']).agg({'TaskCount': 'sum'}).reset_index()
+        df_top4 = df_grouped.nlargest(4, 'TaskCount')
+        df_top4['Baseline'] = 1899206  # Changed from 'Base line' to 'Baseline' for consistency
+        return df_top4, df
+
+    def generate_table_and_chart(self, df: pd.DataFrame) -> str:
+        # Create a properly formatted table for the chart
+        table_rows = ["<tr><th>DATE</th><th>Baseline</th><th>Total Jobs</th></tr>"]
+        
+        for _, row in df.iterrows():
+            date_str = row['DATE'].strftime('%Y-%m-%d')
+            baseline = row['Baseline']
+            task_count = row['TaskCount']
+            table_rows.append(f"<tr><td>{date_str}</td><td>{baseline}</td><td>{task_count}</td></tr>")
+        
+        return f"""
+        <ac:structured-macro ac:name="table-chart">
+          <ac:parameter ac:name="title">4th Peak of the Month</ac:parameter>
+          <ac:parameter ac:name="type">column</ac:parameter>
+          <ac:parameter ac:name="legend">true</ac:parameter>
+          <ac:parameter ac:name="dataOrientation">horizontal</ac:parameter>
+          <ac:rich-text-body>
+            <table class="wrapped">
+              <tbody>
+                {''.join(table_rows)}
+              </tbody>
+            </table>
+          </ac:rich-text-body>
+        </ac:structured-macro>
+        """
+
+    def generate_market_share_table(self, df: pd.DataFrame) -> str:
+        if not all(col in df.columns for col in ['Country', 'TaskCount']):
+            return ""
+            
+        df_market = df.groupby(['Country'], as_index=False)['TaskCount'].sum().sort_values(by='TaskCount', ascending=False)
+        
+        table_rows = ["<tr><th>Country</th><th>Task Count</th></tr>"]
+        for _, row in df_market.iterrows():
+            table_rows.append(f"<tr><td>{row['Country']}</td><td>{row['TaskCount']}</td></tr>")
+        
+        return f"""
+        <ac:structured-macro ac:name="table-chart">
+          <ac:parameter ac:name="title">Task Count by Country</ac:parameter>
+          <ac:parameter ac:name="type">column</ac:parameter>
+          <ac:parameter ac:name="legend">false</ac:parameter>
+          <ac:parameter ac:name="dataOrientation">horizontal</ac:parameter>
+          <ac:rich-text-body>
+            <table class="wrapped">
+              <tbody>
+                {''.join(table_rows)}
+              </tbody>
+            </table>
+          </ac:rich-text-body>
+        </ac:structured-macro>
+        """
+
+    def generate_variation_table(self, df: pd.DataFrame) -> str:
+        """Generate a detailed table with variation between baseline and actual task counts"""
+        table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Total Jobs</th><th>Variation</th></tr>"]
+        
+        for _, row in df.iterrows():
+            date_str = row['DATE'].strftime('%Y-%m-%d')
+            baseline = row['Baseline']
+            task_count = row['TaskCount']
+            variation = task_count - baseline
+            
+            table_rows.append(f"<tr><td>{date_str}</td><td>{baseline}</td><td>{task_count}</td><td>{variation}</td></tr>")
+        
+        return f"""
+        <table class="wrapped">
+          <tbody>
+            {''.join(table_rows)}
+          </tbody>
+        </table>
+        """
+
+    def run_df_top4(self) -> None:
+        df_top4, df_full = self._load_and_process_data()
+        
+        # Generate the content with proper charts and tables
+        content = f"""
+        <h1>Monthly Total Jobs Usage Report</h1>
+        <p><b>Last updated:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</p>
+        <p><b>Generated by:</b> Confluence Reporter</p>
+        
+        <h2>4th Peak of the Month</h2>
+        {self.generate_table_and_chart(df_top4)}
+        
+        <h3>Detailed Data</h3>
+        {self.generate_variation_table(df_top4)}
+        
+        <h2>Task Distribution by Country</h2>
+        {self.generate_market_share_table(df_full)}
+        
+        <p><ac:em>Note: This report shows the top 4 dates with highest total jobs compared to baseline.</ac:em></p>
+        """
+        
+        # Create or update the Confluence page
+        page_id, version = self._get_page_info()
+        self._create_or_update_page(content=content, page_id=page_id, version=version)
+
+    def _get_page_info(self) -> Tuple[Optional[str], Optional[int]]:
+        params = {
+            'title': self.config['PAGE_TITLE'],
+            'spaceKey': self.config['SPACE_KEY'],
+            'expand': 'version'
+        }
+        response = self.session.get(f"{self.config['CONFLUENCE_URL']}/rest/api/content", params=params)
+        response.raise_for_status()
+        data = response.json()
+        if data['size'] > 0:
+            page_id = data['results'][0]['id']
+            version = data['results'][0]['version']['number']
+            return page_id, version
+        return None, None
+
+    def _create_or_update_page(self, content: str, page_id: Optional[str] = None, version: Optional[int] = None) -> None:
+        payload = {
+            "type": "page",
+            "title": self.config['PAGE_TITLE'],
+            "space": {"key": self.config['SPACE_KEY']},
+            "body": {
+                "storage": {
+                    "value": content,
+                    "representation": "storage"
+                }
+            }
+        }
+        
+        if page_id and version is not None:
+            payload['version'] = {"number": version + 1}
+            response = self.session.put(f"{self.config['CONFLUENCE_URL']}/rest/api/content/{page_id}", json=payload)
+            logger.info(f"Updated page ID {page_id} with status code: {response.status_code}")
+            response.raise_for_status()
+        else:
+            response = self.session.post(f"{self.config['CONFLUENCE_URL']}/rest/api/content", json=payload)
+            logger.info(f"Created new page with status code: {response.status_code}")
+            response.raise_for_status()
+
+def main():
+    try:
+        reporter = ConfluenceReporter()
+        reporter.run_df_top4()
+        logger.info("Confluence report updated successfully.")
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+        raise
+
+if __name__ == "__main__":
+    main()
