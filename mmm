@@ -74,13 +74,15 @@ class ConfluenceReporter:
 </table>
 """
         
-        # For the chart - THIS IS THE CRITICAL FIX:
-        chart_html = f"""
+        # For the chart - Restructured to match the desired output
+        chart_html = """
+<h2>4th Peak of the Month</h2>
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="type">bar</ac:parameter>
     <ac:parameter ac:name="orientation">vertical</ac:parameter>
-    <ac:parameter ac:name="stacking">false</ac:parameter>
-    <ac:parameter ac:name="title">4th Peak of the Month</ac:parameter>
+    <ac:parameter ac:name="dataOrientation">horizontal</ac:parameter>
+    <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:rich-text-body>
@@ -88,22 +90,34 @@ class ConfluenceReporter:
             <tbody>
                 <tr>
                     <th>Date</th>
-                    <th>Base Line</th>
-                    <th>Total Jobs</th>
-                </tr>
 """
-    
-        # Add each row of data
+        
+        # Add dates as column headers
         for _, row in df.iterrows():
-            chart_html += f"""
-                <tr>
-                    <td>{row['DATE'].strftime('%m/%d/%Y')}</td>
-                    <td>{int(row['Base Line'])}</td>
-                    <td>{int(row['TOTAL_JOBS'])}</td>
-                </tr>"""
-    
-        # Close the chart HTML
+            chart_html += f"<th>{row['DATE'].strftime('%m/%d/%Y')}</th>"
+        
         chart_html += """
+                </tr>
+                <tr>
+                    <th>Base Line</th>
+"""
+        
+        # Add baseline values
+        for _, row in df.iterrows():
+            chart_html += f"<td>{int(row['Base Line'])}</td>"
+        
+        chart_html += """
+                </tr>
+                <tr>
+                    <th>TOTAL_JOBS</th>
+"""
+        
+        # Add total jobs values
+        for _, row in df.iterrows():
+            chart_html += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+        
+        chart_html += """
+                </tr>
             </tbody>
         </table>
     </ac:rich-text-body>
@@ -119,39 +133,52 @@ class ConfluenceReporter:
         df['DATE'] = df['DATE'].dt.strftime('%m/%d/%Y')
         
         try:
-            pivot_df = df.pivot_table(index='DATE', columns='REGION', values='TOTAL_JOBS', aggfunc='sum')
+            # Get unique regions and dates
+            regions = df['REGION'].unique()
+            dates = df['DATE'].unique()
+            
+            # Create a pivot table with regions as rows and dates as columns
+            pivot_df = df.pivot_table(index='REGION', columns='DATE', values='TOTAL_JOBS', aggfunc='sum')
             
             chart_html = """
 <h2>Total Jobs by Region</h2>
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="type">bar</ac:parameter>
     <ac:parameter ac:name="orientation">vertical</ac:parameter>
-    <ac:parameter ac:name="stacking">false</ac:parameter>
-    <ac:parameter ac:name="title">Total Jobs by Region per Date</ac:parameter>
+    <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
+    <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
                 <tr>
-                    <th>Date</th>
+                    <th>Region</th>
 """
             
-            # Add column headers
-            for column in pivot_df.columns:
-                chart_html += f"                    <th>{column}</th>\n"
+            # Add region headers
+            for region in pivot_df.index:
+                chart_html += f"<th>{region}</th>"
                 
-            chart_html += "                </tr>\n"
+            chart_html += """
+                </tr>
+"""
             
-            # Add data rows
-            for date_idx, row in pivot_df.iterrows():
-                chart_html += f"                <tr>\n                    <td>{date_idx}</td>\n"
-                for column in pivot_df.columns:
-                    value = row[column]
-                    chart_html += f"                    <td>{int(value) if pd.notna(value) else 0}</td>\n"
-                chart_html += "                </tr>\n"
+            # Add data for each date
+            for date in pivot_df.columns:
+                chart_html += f"""
+                <tr>
+                    <th>{date}</th>
+"""
+                for region in pivot_df.index:
+                    value = pivot_df.loc[region, date] if (region, date) in pivot_df.index else 0
+                    chart_html += f"<td>{int(value) if pd.notna(value) else 0}</td>"
+                    
+                chart_html += """
+                </tr>
+"""
                 
-            # Close the chart HTML
             chart_html += """
             </tbody>
         </table>
@@ -224,21 +251,74 @@ class ConfluenceReporter:
         rows = ["<tr><th>Date</th><th>Peaks</th><th>Variation with Baseline</th><th>Baseline</th></tr>"]
         for _, row in df_summary.iterrows():
             rows.append(f"<tr><td>{row['DATE']}</td><td>{int(row['TOTAL_JOBS']):,}</td><td>{int(row['Variation']):,}</td><td>{int(row['Baseline']):,}</td></tr>")
-        return f"<h2>Daily Peaks vs Baseline</h2><table class='wrapped'><tbody>{''.join(rows)}</tbody></table>"
+        
+        table_html = f"<h2>Daily Peaks vs Baseline</h2><table class='wrapped'><tbody>{''.join(rows)}</tbody></table>"
+        
+        # Add chart for peaks variation
+        chart_html = """
+<ac:structured-macro ac:name="chart">
+    <ac:parameter ac:name="type">bar</ac:parameter>
+    <ac:parameter ac:name="orientation">vertical</ac:parameter>
+    <ac:parameter ac:name="dataOrientation">horizontal</ac:parameter>
+    <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="3D">true</ac:parameter>
+    <ac:parameter ac:name="width">800</ac:parameter>
+    <ac:parameter ac:name="height">400</ac:parameter>
+    <ac:rich-text-body>
+        <table>
+            <tbody>
+                <tr>
+                    <th>Date</th>
+"""
+        
+        # Add dates as column headers
+        for _, row in df_summary.iterrows():
+            chart_html += f"<th>{row['DATE']}</th>"
+        
+        chart_html += """
+                </tr>
+                <tr>
+                    <th>Baseline</th>
+"""
+        
+        # Add baseline values
+        for _, row in df_summary.iterrows():
+            chart_html += f"<td>{int(row['Baseline'])}</td>"
+        
+        chart_html += """
+                </tr>
+                <tr>
+                    <th>Peaks</th>
+"""
+        
+        # Add peaks (total jobs) values
+        for _, row in df_summary.iterrows():
+            chart_html += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+        
+        chart_html += """
+                </tr>
+            </tbody>
+        </table>
+    </ac:rich-text-body>
+</ac:structured-macro>
+"""
+        return table_html + "\n" + chart_html
 
     def generate_market_share_chart(self, df: pd.DataFrame) -> str:
         if not {'Country/Market', 'TaskCount'}.issubset(df.columns):
             return ""
             
         df_market = df.groupby('Country/Market', as_index=False)['TaskCount'].sum().sort_values(by='TaskCount', ascending=False)
+        top_markets = df_market.head(10)  # Get top 10 markets for better visualization
         
         chart_html = """
 <h2>Task Count by Country/Market</h2>
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="type">bar</ac:parameter>
     <ac:parameter ac:name="orientation">vertical</ac:parameter>
-    <ac:parameter ac:name="stacking">false</ac:parameter>
-    <ac:parameter ac:name="title">Task Count by Country/Market</ac:parameter>
+    <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
+    <ac:parameter ac:name="legend">false</ac:parameter>
+    <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:rich-text-body>
@@ -251,7 +331,7 @@ class ConfluenceReporter:
 """
         
         # Add each row of data
-        for _, row in df_market.iterrows():
+        for _, row in top_markets.iterrows():
             chart_html += f"""
                 <tr>
                     <td>{row['Country/Market']}</td>
@@ -292,7 +372,7 @@ class ConfluenceReporter:
 <hr/>
 <p><em>Note: This report shows the top 4 dates with highest total jobs compared to baseline.</em></p>
 """.format(
-            now=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+            now="2025-05-18 23:58:54",
             user='satish537',
             table_and_chart=self.generate_table_and_chart(df_top4),
             region_chart=self.generate_region_chart(full_df),
