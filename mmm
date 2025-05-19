@@ -82,6 +82,8 @@ class ConfluenceReporter:
     <ac:parameter ac:name="showValues">true</ac:parameter>
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
+    <ac:parameter ac:name="opacity">90</ac:parameter>
+    <ac:parameter ac:name="labelDisplay">inside</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -99,9 +101,9 @@ class ConfluenceReporter:
                     <th>Baseline</th>
 """
         
-        # Add baseline values
+        # Add baseline values with tooltips
         for _, row in df.iterrows():
-            chart_html += f"<td>{int(row['Base Line'])}</td>"
+            chart_html += f"<td title=\"Baseline: {int(row['Base Line']):,}\">{int(row['Base Line'])}</td>"
         
         chart_html += """
                 </tr>
@@ -109,9 +111,9 @@ class ConfluenceReporter:
                     <th>Total Jobs</th>
 """
         
-        # Add total jobs values
+        # Add total jobs values with tooltips
         for _, row in df.iterrows():
-            chart_html += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+            chart_html += f"<td title=\"Total Jobs: {int(row['TOTAL_JOBS']):,}\">{int(row['TOTAL_JOBS'])}</td>"
         
         chart_html += """
                 </tr>
@@ -168,6 +170,8 @@ class ConfluenceReporter:
     <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="colors">#336600</ac:parameter>
     <ac:parameter ac:name="showValues">true</ac:parameter>
+    <ac:parameter ac:name="opacity">90</ac:parameter>
+    <ac:parameter ac:name="labelDisplay">inside</ac:parameter>
     <ac:parameter ac:name="width">1000</ac:parameter>
     <ac:parameter ac:name="height">500</ac:parameter>
     <ac:rich-text-body>
@@ -179,12 +183,13 @@ class ConfluenceReporter:
                 </tr>
 """
             
-            # Add data for each date
+            # Add data for each date with tooltips
             for _, row in df_summary.iterrows():
+                percentage = row['Percentage']
                 chart_html += f"""
                 <tr>
                     <td>{row['Formatted_DATE']}</td>
-                    <td>{int(row['TOTAL_JOBS'])}</td>
+                    <td title="Date: {row['Formatted_DATE']}, Jobs: {int(row['TOTAL_JOBS']):,} ({percentage}%)">{int(row['TOTAL_JOBS'])}</td>
                 </tr>"""
             
             # Close the chart HTML
@@ -258,6 +263,8 @@ class ConfluenceReporter:
     <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
     <ac:parameter ac:name="colors">#336600</ac:parameter>
     <ac:parameter ac:name="showValues">true</ac:parameter>
+    <ac:parameter ac:name="opacity">90</ac:parameter>
+    <ac:parameter ac:name="labelDisplay">inside</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -267,12 +274,13 @@ class ConfluenceReporter:
                 </tr>
 """
         
-        # Add each row of data
+        # Add each row of data with tooltips
         for _, row in df_summary.iterrows():
+            variation = int(row['Variation with Baseline'])
             chart_html += f"""
                 <tr>
                     <td>{row['Formatted_DATE']}</td>
-                    <td>{int(row['Variation with Baseline'])}</td>
+                    <td title="Date: {row['Formatted_DATE']}, Variation: {variation:,}">{variation}</td>
                 </tr>"""
         
         # Close the chart HTML
@@ -328,6 +336,10 @@ class ConfluenceReporter:
         df_market = df.groupby('Country/Market', as_index=False)['TaskCount'].sum().sort_values(by='TaskCount', ascending=False)
         top_markets = df_market.head(10)  # Get top 10 markets for better visualization
         
+        # Calculate percentages for better tooltips
+        total_tasks = top_markets['TaskCount'].sum()
+        top_markets['Percentage'] = (top_markets['TaskCount'] / total_tasks * 100).round(1)
+        
         chart_html = """
 <h2>Task Count by Country/Market</h2>
 <ac:structured-macro ac:name="chart">
@@ -338,6 +350,8 @@ class ConfluenceReporter:
     <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="colors">#336600</ac:parameter>
     <ac:parameter ac:name="showValues">true</ac:parameter>
+    <ac:parameter ac:name="opacity">90</ac:parameter>
+    <ac:parameter ac:name="labelDisplay">inside</ac:parameter>
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:rich-text-body>
@@ -349,12 +363,13 @@ class ConfluenceReporter:
                 </tr>
 """
         
-        # Add each row of data
+        # Add each row of data with tooltips
         for _, row in top_markets.iterrows():
+            percentage = row['Percentage']
             chart_html += f"""
                 <tr>
                     <td>{row['Country/Market']}</td>
-                    <td>{int(row['TaskCount'])}</td>
+                    <td title="{row['Country/Market']}: {int(row['TaskCount']):,} ({percentage}%)">{int(row['TaskCount'])}</td>
                 </tr>"""
         
         # Close the chart HTML
@@ -390,7 +405,7 @@ class ConfluenceReporter:
 <hr/>
 <p><em>Note: This report shows the top 4 dates with highest total jobs compared to baseline.</em></p>
 """.format(
-            now="2025-05-19 00:28:28",
+            now="2025-05-19 00:33:07",
             user='satish537',
             table_and_chart=self.generate_table_and_chart(df_top4),
             region_chart=self.generate_region_chart(full_df),
