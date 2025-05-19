@@ -55,35 +55,17 @@ class ConfluenceReporter:
         return df_top4, df
         
     def generate_table_and_chart(self, df: pd.DataFrame) -> str:
-        # First, create the table rows
-        table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Total Jobs</th><th>Variation</th></tr>"]
-        for _, row in df.iterrows():
-            table_rows.append(
-                f"<tr><td>{row['DATE'].strftime('%m/%d/%Y')}</td><td>{int(row['Base Line']):,}</td><td>{int(row['TOTAL_JOBS']):,}</td><td>{int(row['Variation']):,}</td></tr>"
-            )
-        
-        table_html = f"""
-<table class="wrapped">
-    <colgroup>
-        <col/>
-        <col/>
-        <col/>
-        <col/>
-    </colgroup>
-    <tbody>{''.join(table_rows)}</tbody>
-</table>
-"""
-        
-        # For the chart - Restructured to match the desired output
+        # First, generate the chart (to match the order in the attachment)
         chart_html = """
-<h2>4th Peak of the Month</h2>
+<h2>4th Peak of Jan:</h2>
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="type">bar</ac:parameter>
     <ac:parameter ac:name="orientation">vertical</ac:parameter>
     <ac:parameter ac:name="dataOrientation">horizontal</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:parameter ac:name="3D">true</ac:parameter>
-    <ac:parameter ac:name="colors">#CC0000,#336600</ac:parameter>
+    <ac:parameter ac:name="colors">#336600,#CC0000</ac:parameter>
+    <ac:parameter ac:name="showValues">true</ac:parameter>
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:rich-text-body>
@@ -100,7 +82,7 @@ class ConfluenceReporter:
         chart_html += """
                 </tr>
                 <tr>
-                    <th>Base Line</th>
+                    <th>Baseline</th>
 """
         
         # Add baseline values
@@ -110,7 +92,7 @@ class ConfluenceReporter:
         chart_html += """
                 </tr>
                 <tr>
-                    <th>TOTAL_JOBS</th>
+                    <th>Total Jobs</th>
 """
         
         # Add total jobs values
@@ -124,14 +106,33 @@ class ConfluenceReporter:
     </ac:rich-text-body>
 </ac:structured-macro>
 """
-        return table_html + "\n" + chart_html
+        
+        # Then, create the table rows
+        table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Total Jobs</th><th>Variation</th></tr>"]
+        for _, row in df.iterrows():
+            table_rows.append(
+                f"<tr><td>{row['DATE'].strftime('%-m/%-d/%Y')}</td><td>{int(row['Base Line']):,}</td><td>{int(row['TOTAL_JOBS']):,}</td><td>{int(row['Variation']):,}</td></tr>"
+            )
+        
+        table_html = f"""
+<table class="wrapped">
+    <colgroup>
+        <col/>
+        <col/>
+        <col/>
+        <col/>
+    </colgroup>
+    <tbody>{''.join(table_rows)}</tbody>
+</table>
+"""
+        return chart_html + "\n" + table_html
 
     def generate_region_chart(self, df: pd.DataFrame) -> str:
         if not {'DATE', 'TOTAL_JOBS'}.issubset(df.columns):
             return ""
             
         df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
-        df['DATE'] = df['DATE'].dt.strftime('%m/%d/%Y')
+        df['DATE'] = df['DATE'].dt.strftime('%-m/%-d/%Y')
         
         try:
             # Group by date and sum total jobs
@@ -147,9 +148,10 @@ class ConfluenceReporter:
     <ac:parameter ac:name="type">bar</ac:parameter>
     <ac:parameter ac:name="orientation">vertical</ac:parameter>
     <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
-    <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="legend">false</ac:parameter>
     <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="colors">#336600</ac:parameter>
+    <ac:parameter ac:name="showValues">true</ac:parameter>
     <ac:parameter ac:name="width">1000</ac:parameter>
     <ac:parameter ac:name="height">500</ac:parameter>
     <ac:rich-text-body>
@@ -212,7 +214,7 @@ class ConfluenceReporter:
     def generate_daily_summary_table(self, df: pd.DataFrame) -> str:
         df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
         df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
-        df_summary['DATE'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
+        df_summary['DATE'] = df_summary['DATE'].dt.strftime('%-m/%-d/%Y')
         rows = ["<tr><th>Date</th><th>Sum of TOTAL_JOBS</th></tr>"]
         for _, row in df_summary.iterrows():
             rows.append(f"<tr><td>{row['DATE']}</td><td>{int(row['TOTAL_JOBS']):,}</td></tr>")
@@ -223,20 +225,14 @@ class ConfluenceReporter:
         max_range = 2000000
         df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
         df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
-        df_summary['DATE'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
+        df_summary['DATE'] = df_summary['DATE'].dt.strftime('%-m/%-d/%Y')
         df_summary['Baseline'] = baseline
         df_summary['Max Range'] = max_range
         df_summary['Variation with Baseline'] = df_summary['Baseline'] - df_summary['TOTAL_JOBS']
         
-        # First generate the table
-        rows = ["<tr><th>Date</th><th>Peaks</th><th>Variation with Baseline</th><th>Baseline</th><th>Max Range</th></tr>"]
-        for _, row in df_summary.iterrows():
-            rows.append(f"<tr><td>{row['DATE']}</td><td>{int(row['TOTAL_JOBS']):,}</td><td>{int(row['Variation with Baseline']):,}</td><td>{int(row['Baseline']):,}</td><td>{int(row['Max Range']):,}</td></tr>")
-        
-        table_html = f"<h2>Variation with Baseline Data:</h2><table class='wrapped'><tbody>{''.join(rows)}</tbody></table>"
-        
-        # Then generate the line chart for variation
+        # First generate the chart
         chart_html = """
+<h2>Variation with Baseline Data:</h2>
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="type">line</ac:parameter>
     <ac:parameter ac:name="title">Variation with Baseline Data</ac:parameter>
@@ -244,6 +240,7 @@ class ConfluenceReporter:
     <ac:parameter ac:name="height">500</ac:parameter>
     <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
     <ac:parameter ac:name="colors">#336600</ac:parameter>
+    <ac:parameter ac:name="showValues">true</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -268,6 +265,43 @@ class ConfluenceReporter:
     </ac:rich-text-body>
 </ac:structured-macro>
 """
+        
+        # Then generate the table
+        table_html = """
+<table class="wrapped">
+    <colgroup>
+        <col/>
+        <col/>
+        <col/>
+        <col/>
+        <col/>
+    </colgroup>
+    <tbody>
+        <tr>
+            <th>Date</th>
+            <th>Peaks</th>
+            <th>Variation with Baseline</th>
+            <th>Baseline</th>
+            <th>Max Range</th>
+        </tr>
+"""
+        
+        # Add rows to the table
+        for _, row in df_summary.head(5).iterrows():
+            table_html += f"""
+        <tr>
+            <td>{row['DATE']}</td>
+            <td>{int(row['TOTAL_JOBS']):,}</td>
+            <td>{int(row['Variation with Baseline']):,}</td>
+            <td>{int(row['Baseline']):,}</td>
+            <td>{int(row['Max Range']):,}</td>
+        </tr>"""
+            
+        table_html += """
+    </tbody>
+</table>
+"""
+        
         return chart_html + "\n" + table_html
 
     def generate_market_share_chart(self, df: pd.DataFrame) -> str:
@@ -286,6 +320,7 @@ class ConfluenceReporter:
     <ac:parameter ac:name="legend">false</ac:parameter>
     <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="colors">#336600</ac:parameter>
+    <ac:parameter ac:name="showValues">true</ac:parameter>
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:rich-text-body>
@@ -338,8 +373,8 @@ class ConfluenceReporter:
 <hr/>
 <p><em>Note: This report shows the top 4 dates with highest total jobs compared to baseline.</em></p>
 """.format(
-            now="2025-05-19 00:17:07",
-            user='satish537good',
+            now="2025-05-19 00:24:16",
+            user='satish537',
             table_and_chart=self.generate_table_and_chart(df_top4),
             region_chart=self.generate_region_chart(full_df),
             daily_table=self.generate_daily_summary_table(full_df),
