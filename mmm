@@ -83,6 +83,7 @@ class ConfluenceReporter:
     <ac:parameter ac:name="dataOrientation">horizontal</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:parameter ac:name="3D">true</ac:parameter>
+    <ac:parameter ac:name="colors">#CC0000,#336600</ac:parameter>
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:rich-text-body>
@@ -148,6 +149,7 @@ class ConfluenceReporter:
     <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:parameter ac:name="3D">true</ac:parameter>
+    <ac:parameter ac:name="colors">#336600</ac:parameter>
     <ac:parameter ac:name="width">1000</ac:parameter>
     <ac:parameter ac:name="height">500</ac:parameter>
     <ac:rich-text-body>
@@ -216,45 +218,6 @@ class ConfluenceReporter:
             rows.append(f"<tr><td>{row['DATE']}</td><td>{int(row['TOTAL_JOBS']):,}</td></tr>")
         return f"<h2>Total Jobs Per Day</h2><table class='wrapped'><tbody>{''.join(rows)}</tbody></table>"
 
-    def generate_daily_trend_chart(self, df: pd.DataFrame) -> str:
-        df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
-        df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
-        df_summary = df_summary.sort_values('DATE')  # Sort by date for proper trend
-        df_summary['DATE'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
-        
-        chart_html = """
-<h2>Daily Job Volume Trend</h2>
-<ac:structured-macro ac:name="chart">
-    <ac:parameter ac:name="type">line</ac:parameter>
-    <ac:parameter ac:name="title">Daily Job Volume Trend</ac:parameter>
-    <ac:parameter ac:name="width">800</ac:parameter>
-    <ac:parameter ac:name="height">400</ac:parameter>
-    <ac:rich-text-body>
-        <table>
-            <tbody>
-                <tr>
-                    <th>Date</th>
-                    <th>Total Jobs</th>
-                </tr>
-"""
-        
-        # Add each row of data
-        for _, row in df_summary.iterrows():
-            chart_html += f"""
-                <tr>
-                    <td>{row['DATE']}</td>
-                    <td>{int(row['TOTAL_JOBS'])}</td>
-                </tr>"""
-        
-        # Close the chart HTML
-        chart_html += """
-            </tbody>
-        </table>
-    </ac:rich-text-body>
-</ac:structured-macro>
-"""
-        return chart_html
-
     def generate_peaks_variation_table(self, df: pd.DataFrame) -> str:
         baseline = 1899206
         max_range = 2000000
@@ -280,6 +243,7 @@ class ConfluenceReporter:
     <ac:parameter ac:name="width">1000</ac:parameter>
     <ac:parameter ac:name="height">500</ac:parameter>
     <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
+    <ac:parameter ac:name="colors">#336600</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -321,6 +285,7 @@ class ConfluenceReporter:
     <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
     <ac:parameter ac:name="legend">false</ac:parameter>
     <ac:parameter ac:name="3D">true</ac:parameter>
+    <ac:parameter ac:name="colors">#336600</ac:parameter>
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:rich-text-body>
@@ -367,19 +332,17 @@ class ConfluenceReporter:
 {table_and_chart}
 {region_chart}
 {daily_table}
-{daily_trend_chart}
 {peaks_variation_table}
 {market_share_chart}
 {market_share_table}
 <hr/>
 <p><em>Note: This report shows the top 4 dates with highest total jobs compared to baseline.</em></p>
 """.format(
-            now="2025-05-19 00:09:36",
-            user='satish537',
+            now="2025-05-19 00:17:07",
+            user='satish537good',
             table_and_chart=self.generate_table_and_chart(df_top4),
             region_chart=self.generate_region_chart(full_df),
             daily_table=self.generate_daily_summary_table(full_df),
-            daily_trend_chart=self.generate_daily_trend_chart(full_df),
             peaks_variation_table=self.generate_peaks_variation_table(full_df),
             market_share_chart=self.generate_market_share_chart(full_df),
             market_share_table=self.generate_market_share_table(full_df),
