@@ -1,0 +1,166 @@
+// Add this function inside your AdminUI component
+const handleSearch = (value: string) => {
+  setSearchQuery(value);
+  
+  // If you need to update column filters based on the search
+  if (!value.trim()) {
+    setColumnFilters([]);
+  } else {
+    setColumnFilters([
+      { id: 'servername', value: value },
+      { id: 'serialno', value: value }
+    ]);
+  }
+};
+
+// Add this in your return statement where you want the search box to appear
+const serverOptions = React.useMemo(() => {
+  if (!query.data) return [];
+  // Get unique server names and serial numbers for dropdown
+  const servernameSet = new Set(query.data.map(item => item.servername).filter(Boolean));
+  const serialnoSet = new Set(query.data.map(item => item.serialno).filter(Boolean));
+  
+  return [...servernameSet, ...serialnoSet];
+}, [query.data]);
+
+// In your JSX return:
+return (
+  <div>
+    {/* Header and other content */}
+    
+    {/* Add the search component */}
+    <div className="search-container mb-4">
+      <h3>Provide hosts or Serial number to search</h3>
+      <div className="flex items-center">
+        <ComboBox
+          options={serverOptions}
+          placeholder="Enter hostname or serial number"
+          onChange={handleSearch}
+          value={searchQuery}
+        />
+        <button
+          onClick={() => handleSearch("")}
+          className="ml-2 px-3 py-2 bg-gray-100 border border-gray-300 rounded hover:bg-gray-200"
+          disabled={!searchQuery}
+        >
+          Clear
+        </button>
+      </div>
+    </div>
+    
+    {/* Your existing DataTable and other components */}
+    {/* ... */}
+  </div>
+);
+
+
+
+
+
+
+
+
+
+import React, { useState, useEffect, useRef } from 'react';
+
+interface ComboBoxProps {
+  options: string[];
+  placeholder: string;
+  onChange: (value: string) => void;
+  value: string;
+}
+
+const ComboBox: React.FC<ComboBoxProps> = ({ 
+  options, 
+  placeholder, 
+  onChange,
+  value 
+}) => {
+  const [inputValue, setInputValue] = useState<string>(value);
+  const [isOpen, setIsOpen] = useState<boolean>(false);
+  const [filteredOptions, setFilteredOptions] = useState<string[]>(options);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Update input value when external value changes
+  useEffect(() => {
+    setInputValue(value);
+  }, [value]);
+
+  // Filter options when input value changes
+  useEffect(() => {
+    const filtered = options.filter(option => 
+      option.toLowerCase().includes(inputValue.toLowerCase())
+    );
+    setFilteredOptions(filtered);
+  }, [inputValue, options]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  // Handle input change
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setInputValue(value);
+    onChange(value);
+  };
+
+  // Handle option selection
+  const handleOptionClick = (option: string) => {
+    setInputValue(option);
+    onChange(option);
+    setIsOpen(false);
+  };
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <div className="flex">
+        <input
+          type="text"
+          id="searchbox"
+          value={inputValue}
+          onChange={handleInputChange}
+          onFocus={() => setIsOpen(true)}
+          placeholder={placeholder}
+          className="w-full px-4 py-2 border border-gray-300 rounded-l focus:outline-none"
+        />
+        <button
+          type="button"
+          onClick={() => setIsOpen(!isOpen)}
+          className="px-3 py-2 bg-gray-100 border border-l-0 border-gray-300 rounded-r hover:bg-gray-200 focus:outline-none"
+        >
+          ▼
+        </button>
+      </div>
+      
+      {isOpen && filteredOptions.length > 0 && (
+        <ul className="absolute z-10 w-full mt-1 max-h-60 overflow-auto bg-white border border-gray-300 rounded-md shadow-lg">
+          {filteredOptions.map((option, index) => (
+            <li
+              key={index}
+              onClick={() => handleOptionClick(option)}
+              className="px-4 py-2 hover:bg-blue-100 cursor-pointer"
+            >
+              {option}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+export default ComboBox;
+
+
+import ComboBox from '../components/ComboBox'; // Adjust the path as needed
