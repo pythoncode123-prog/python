@@ -1,5 +1,4 @@
 import pyodbc
-import cx_Oracle  # Add this import for Oracle connections
 import csv
 import configparser
 import logging
@@ -18,7 +17,7 @@ def load_config(config_path):
         'schema': db_config['SchemaName'],
         'user': db_config['Username'],
         'password': db_config['Password'],
-        'db_type': db_config.get('DBType', 'SQLSERVER')  # Add a database type parameter with default
+        'db_type': db_config.get('DBType', 'SQLSERVER')  # Add database type parameter
     }
 
 def connect_sql_server(cfg):
@@ -32,20 +31,18 @@ def connect_sql_server(cfg):
     )
     return pyodbc.connect(conn_str)
 
-def connect_oracle(cfg):
-    """Connect to Oracle server using configuration."""
-    # Make sure Oracle client libraries are properly installed and configured
-    # Set Oracle environment variables if needed
-    dsn = cx_Oracle.makedsn(
-        host=cfg['host'],
-        port=cfg['port'],
-        service_name=cfg['service']
+def connect_oracle_odbc(cfg):
+    """Connect to Oracle server using ODBC."""
+    # Use an Oracle ODBC driver instead of cx_Oracle
+    conn_str = (
+        f"DRIVER={{Oracle in OraClient12Home1}};"  # Change this to match your installed Oracle ODBC driver name
+        f"SERVER={cfg['host']};"
+        f"PORT={cfg['port']};"
+        f"SERVICE_NAME={cfg['service']};"
+        f"UID={cfg['user']};"
+        f"PWD={cfg['password']}"
     )
-    return cx_Oracle.connect(
-        user=cfg['user'],
-        password=cfg['password'],
-        dsn=dsn
-    )
+    return pyodbc.connect(conn_str)
 
 def execute_query_and_write_csv(conn, query, csv_path):
     """Execute query and write results to CSV file."""
@@ -76,7 +73,7 @@ def sql_to_csv(config_file, query_file, output_csv, execution_timestamp=None):
         
         # Connect to the appropriate database type
         if cfg.get('db_type', '').upper() == 'ORACLE':
-            conn = connect_oracle(cfg)
+            conn = connect_oracle_odbc(cfg)
         else:
             conn = connect_sql_server(cfg)  # Default to SQL Server
             
