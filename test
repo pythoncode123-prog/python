@@ -1,9 +1,11 @@
-import pyodbc
 import csv
 import configparser
 import logging
 from datetime import datetime
 import os
+import subprocess
+import tempfile
+import pyodbc  # Keep this for SQL Server connections
 
 def load_config(config_path):
     """Load database configuration from file."""
@@ -17,7 +19,7 @@ def load_config(config_path):
         'schema': db_config['SchemaName'],
         'user': db_config['Username'],
         'password': db_config['Password'],
-        'db_type': db_config.get('DBType', 'SQLSERVER')  # Add database type parameter
+        'db_type': db_config.get('DBType', 'SQLSERVER')
     }
 
 def connect_sql_server(cfg):
@@ -31,31 +33,54 @@ def connect_sql_server(cfg):
     )
     return pyodbc.connect(conn_str)
 
-def connect_oracle_odbc(cfg):
-    """Connect to Oracle server using ODBC."""
-    # Use an Oracle ODBC driver instead of cx_Oracle
-    conn_str = (
-        f"DRIVER={{Oracle in OraClient12Home1}};"  # Change this to match your installed Oracle ODBC driver name
-        f"SERVER={cfg['host']};"
-        f"PORT={cfg['port']};"
-        f"SERVICE_NAME={cfg['service']};"
-        f"UID={cfg['user']};"
-        f"PWD={cfg['password']}"
-    )
-    return pyodbc.connect(conn_str)
-
-def execute_query_and_write_csv(conn, query, csv_path):
-    """Execute query and write results to CSV file."""
-    cursor = conn.cursor()
-    cursor.execute(query)
-    columns = [column[0] for column in cursor.description]
-    with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(columns)
-        for row in cursor:
-            writer.writerow(row)
-    cursor.close()
-    logging.info(f"SQL query results exported to {csv_path}")
+def execute_oracle_query(cfg, query, output_csv):
+    """Execute Oracle query using SQL*Plus."""
+    # Create a temporary SQL file with CSV output formatting
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sql') as temp_sql:
+        temp_sql.write("SET ECHO OFF\n")
+        temp_sql.write("SET HEADING ON\n")
+        temp_sql.write("SET PAGESIZE 0\n")
+        temp_sql.write("SET LINESIZE 32767\n")
+        temp_sql.write("SET FEEDBACK OFF\n")
+        temp_sql.write("SET COLSEP ','\n")
+        temp_sql.write("SET TRIMSPOOL ON\n")
+        temp_sql.write(f"SPOOL {output_csv}\n")
+        temp_sql.write(f"{query};\n")
+        temp_sql.write("SPOOL OFF\n")
+        temp_sql.write("EXIT\n")
+        temp_sql_path = temp_sql.name
+    
+    # Build connection string
+    conn_str = f"{cfg['user']}/{cfg['password']}@{cfg['host']}:{cfg['port']}/{cfg['service']}"
+    
+    try:
+        # Execute SQL*Plus command
+        cmd = f"sqlplus -S {conn_str} @{temp_sql_path}"
+        logging.info(f"Executing Oracle query using SQL*Plus")
+        process = subprocess.run(cmd, shell=True, check=True, 
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        # Check if the output CSV was created successfully
+        if os.path.exists(output_csv) and os.path.getsize(output_csv) > 0:
+            logging.info(f"Query results exported to {output_csv}")
+            os.unlink(temp_sql_path)
+            return True
+        else:
+            logging.error("SQL*Plus execution failed to create CSV file")
+            logging.error(f"STDOUT: {process.stdout.decode('utf-8')}")
+            logging.error(f"STDERR: {process.stderr.decode('utf-8')}")
+            os.unlink(temp_sql_path)
+            return False
+    except subprocess.CalledProcessError as e:
+        logging.error(f"SQL*Plus execution error: {e}")
+        logging.error(f"STDOUT: {e.stdout.decode('utf-8')}")
+        logging.error(f"STDERR: {e.stderr.decode('utf-8')}")
+        os.unlink(temp_sql_path)
+        return False
+    except Exception as e:
+        logging.error(f"Error in Oracle SQL execution: {str(e)}")
+        os.unlink(temp_sql_path)
+        return False
 
 def sql_to_csv(config_file, query_file, output_csv, execution_timestamp=None):
     """Execute SQL and export to CSV."""
@@ -71,16 +96,25 @@ def sql_to_csv(config_file, query_file, output_csv, execution_timestamp=None):
             query = f.read()
         query = query.replace('<EM_schema>', cfg['schema'])
         
-        # Connect to the appropriate database type
+        # Execute appropriate database query
         if cfg.get('db_type', '').upper() == 'ORACLE':
-            conn = connect_oracle_odbc(cfg)
+            return execute_oracle_query(cfg, query, output_csv)
         else:
             conn = connect_sql_server(cfg)  # Default to SQL Server
+            cursor = conn.cursor()
+            cursor.execute(query)
             
-        execute_query_and_write_csv(conn, query, output_csv)
-        conn.close()
-        logging.info("SQL to CSV process completed successfully")
-        return True
+            columns = [column[0] for column in cursor.description]
+            with open(output_csv, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(columns)
+                for row in cursor:
+                    writer.writerow(row)
+            
+            cursor.close()
+            conn.close()
+            logging.info(f"SQL Server query results exported to {output_csv}")
+            return True
     except Exception as e:
         logging.error(f"Error in SQL to CSV process: {str(e)}")
         return False
