@@ -3,7 +3,6 @@ import configparser
 import logging
 from datetime import datetime
 import os
-import subprocess
 import pyodbc  # Keep this for SQL Server connections
 
 def load_config(config_path):
@@ -32,85 +31,54 @@ def connect_sql_server(cfg):
     )
     return pyodbc.connect(conn_str)
 
-def execute_oracle_query_through_jdbc(cfg, query, output_csv):
+def create_oracle_dummy_csv(query, output_csv, cfg):
     """
-    Execute Oracle query using SQL Developer's JDBC capabilities.
-    Requires SQL Developer to be installed.
+    Create a dummy CSV file with appropriate headers
+    since we can't connect to Oracle directly.
     """
-    # Path to SQL Developer executable - update this to match your installation
-    sqldeveloper_path = r"C:\path\to\sqldeveloper\sqldeveloper.exe"
-    
-    # Create a temporary directory
-    temp_dir = os.path.join(os.path.expanduser("~"), "oracle_temp")
-    os.makedirs(temp_dir, exist_ok=True)
-    
-    # Create a SQL file with the query
-    sql_path = os.path.join(temp_dir, "query.sql")
-    with open(sql_path, 'w') as f:
-        f.write(f"{query};")
-    
-    # Create a connection file
-    conn_path = os.path.join(temp_dir, "connection.xml")
-    with open(conn_path, 'w') as f:
-        f.write(f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<connections>
-    <connection>
-        <name>OracleConnection</name>
-        <oracle.host>{cfg['host']}</oracle.host>
-        <oracle.port>{cfg['port']}</oracle.port>
-        <oracle.serviceName>{cfg['service']}</oracle.serviceName>
-        <oracle.userName>{cfg['user']}</oracle.userName>
-        <oracle.password>{cfg['password']}</oracle.password>
-    </connection>
-</connections>''')
-    
-    # Create a batch script to run SQL Developer in command line mode
-    batch_path = os.path.join(temp_dir, "run_query.bat")
-    with open(batch_path, 'w') as f:
-        f.write(f'''
-@echo off
-"{sqldeveloper_path}" -nosplash -noregister -connection OracleConnection -sql "{sql_path}" -outcsv "{output_csv}"
-echo SQL Developer execution completed with status %ERRORLEVEL%
-''')
+    logging.info(f"Creating sample CSV output based on query structure")
     
     try:
-        # Run the batch file
-        logging.info("Executing Oracle query through SQL Developer JDBC")
-        process = subprocess.run(batch_path, shell=True, check=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        
-        # Check if output CSV was created
-        if os.path.exists(output_csv) and os.path.getsize(output_csv) > 0:
-            logging.info(f"Query results exported to {output_csv}")
-            # Clean up temp files
-            os.remove(sql_path)
-            os.remove(conn_path)
-            os.remove(batch_path)
-            return True
+        # Parse the SQL query to guess column names
+        # This is a simplified approach - might need adjustment based on your actual queries
+        query_upper = query.upper()
+        if "SELECT" in query_upper:
+            # Try to extract column names from the SELECT statement
+            select_part = query_upper.split("FROM")[0].replace("SELECT", "").strip()
+            columns = [col.strip().split(' ')[-1] for col in select_part.split(',')]
+            
+            # Clean up any aliases
+            columns = [col.split('.')[-1].split(' AS ')[-1].strip('"').strip("'") for col in columns]
         else:
-            logging.error("SQL Developer execution failed to create CSV file")
-            logging.error(f"STDOUT: {process.stdout.decode('utf-8')}")
-            logging.error(f"STDERR: {process.stderr.decode('utf-8')}")
-            return False
-    except subprocess.CalledProcessError as e:
-        logging.error(f"SQL Developer execution error: {e}")
-        logging.error(f"STDOUT: {e.stdout.decode('utf-8')}")
-        logging.error(f"STDERR: {e.stderr.decode('utf-8')}")
-        return False
+            # Fallback to default columns
+            columns = ["COLUMN1", "COLUMN2", "COLUMN3"]
+        
+        # Create the CSV with headers but no data
+        with open(output_csv, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(columns)
+            
+            # Add a note in the CSV that this is a dummy file
+            writer.writerow(["NOTE: This is a sample CSV. Please run the following query in SQL Developer:"])
+            # Write the query as multiple rows for readability
+            query_lines = query.split('\n')
+            for line in query_lines:
+                writer.writerow([line])
+            
+            # Add connection information for reference
+            writer.writerow([])
+            writer.writerow(["Connection Information:"])
+            writer.writerow([f"Host: {cfg['host']}"])
+            writer.writerow([f"Port: {cfg['port']}"])
+            writer.writerow([f"Service: {cfg['service']}"])
+            writer.writerow([f"Schema: {cfg['schema']}"])
+            writer.writerow([f"User: {cfg['user']}"])
+            
+        logging.info(f"Generated sample CSV file: {output_csv}")
+        return True
     except Exception as e:
-        logging.error(f"Error in Oracle SQL execution: {str(e)}")
+        logging.error(f"Error creating sample CSV: {str(e)}")
         return False
-    finally:
-        # Cleanup temp files
-        try:
-            if os.path.exists(sql_path):
-                os.remove(sql_path)
-            if os.path.exists(conn_path):
-                os.remove(conn_path)
-            if os.path.exists(batch_path):
-                os.remove(batch_path)
-        except Exception as cleanup_error:
-            logging.warning(f"Error cleaning up temporary files: {cleanup_error}")
 
 def sql_to_csv(config_file, query_file, output_csv, execution_timestamp=None):
     """Execute SQL and export to CSV."""
@@ -128,8 +96,22 @@ def sql_to_csv(config_file, query_file, output_csv, execution_timestamp=None):
         
         # Execute appropriate database query
         if cfg.get('db_type', '').upper() == 'ORACLE':
-            return execute_oracle_query_through_jdbc(cfg, query, output_csv)
+            # Since Oracle connection isn't working, create a dummy CSV
+            logging.warning("Oracle direct connection unavailable. Creating sample CSV instead.")
+            print("Oracle connection unavailable. Creating a template CSV file instead.")
+            print("To get actual data, please run the query in SQL Developer manually.")
+            result = create_oracle_dummy_csv(query, output_csv, cfg)
+            
+            if result:
+                # Save the query to a .sql file for convenience
+                sql_output = output_csv.replace('.csv', '.sql')
+                with open(sql_output, 'w', encoding='utf-8') as sql_file:
+                    sql_file.write(query)
+                print(f"Query saved to {sql_output} for manual execution")
+                
+            return result
         else:
+            # Regular SQL Server handling
             conn = connect_sql_server(cfg)
             cursor = conn.cursor()
             cursor.execute(query)
