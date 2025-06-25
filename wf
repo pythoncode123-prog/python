@@ -1,0 +1,66 @@
+import logging
+from datetime import datetime
+import os
+import shutil  # Added for file copying operations
+from lib.db_utils import sql_to_csv
+from lib.csv_processor import CSVProcessor
+from lib.confluence_publisher import publish_to_confluence
+
+def run_workflow(config_file, query_file, output_csv, execution_timestamp, execution_user, test_mode=False):
+    """Run the complete workflow."""
+    print(f"Starting workflow at {datetime.now()}")
+    
+    # Step 1: SQL to CSV (or use test file in test mode)
+    print("Step 1: SQL to CSV...")
+    
+    if test_mode:
+        print("Running in TEST MODE - using predefined test data")
+        test_file = "task_usage_report_test.csv"
+        
+        # Check if the test file exists
+        if not os.path.exists(test_file):
+            logging.error(f"Test file {test_file} not found.")
+            print(f"ERROR: Test file {test_file} not found.")
+            return 1
+            
+        # Copy the test file to the expected output location
+        shutil.copy(test_file, output_csv)
+        logging.info(f"Using test file: {test_file}")
+        sql_result = True
+    else:
+        # Normal operation - get data from SQL
+        sql_result = sql_to_csv(config_file, query_file, output_csv)
+        
+    if not sql_result:
+        print("ERROR: SQL to CSV process failed. Check log for details.")
+        return 1
+    print("SQL to CSV completed successfully.")
+    
+    # Step 2: CSV Processing
+    print("\nStep 2: CSV Processing...")
+    processor = CSVProcessor(execution_timestamp, execution_user)
+    
+    # If in test mode, use the special test file names
+    output_prefix = "test_" if test_mode else ""
+    report_file = f"{output_prefix}task_usage_report.csv"
+    report_by_region_file = f"{output_prefix}task_usage_report_by_region.csv"
+    
+    process_result = processor.process_all_files(output_csv, output_prefix=output_prefix)
+    if not process_result:
+        print("ERROR: CSV processing failed. Check log for details.")
+        return 2
+    print("CSV Processing completed successfully.")
+    
+    # Step 3: Confluence Publishing
+    print("\nStep 3: Confluence Publishing...")
+    # Pass the appropriate report file name based on test mode
+    confluence_result = publish_to_confluence(
+        report_file=report_by_region_file,
+        test_mode=test_mode
+    )
+    if not confluence_result:
+        print("ERROR: Confluence publishing failed. Check log for details.")
+        return 3
+    
+    print("\nComplete workflow executed successfully!")
+    return 0
