@@ -1,0 +1,46 @@
+# Only showing the modified method, assuming the rest of the file stays the same
+def process_all_files(self, input_file=None, default_csv_name='data.csv', output_prefix='') -> bool:
+    """
+    Process CSV files and generate summary reports.
+    If input_file is provided, process only that file.
+    
+    Args:
+        input_file: Specific CSV file to process
+        default_csv_name: Default name for the CSV output from SQL
+        output_prefix: Prefix to add to output files (e.g., for test mode)
+    """
+    logging.info("Starting CSV processing")
+    try:
+        if input_file:
+            if not os.path.exists(input_file):
+                logging.error(f"Input file {input_file} not found")
+                return False
+            files_to_process = [input_file]
+        else:
+            files_to_process = [f for f in self.get_csv_files('.') if f != f'{output_prefix}task_usage_report.csv' and f != f'{output_prefix}task_usage_report_by_region.csv']
+        
+        if not files_to_process:
+            logging.warning("No CSV files found to process")
+            return False
+
+        for file in files_to_process:
+            self.process_csv_file(file, default_csv_name)
+
+        # Write summary reports with optional prefix
+        self.write_summary_to_csv(
+            f"{output_prefix}task_usage_report.csv",
+            ["REGION", "ENV", "DATE", "CTM_HOST_NAME", "TOTAL_JOBS"],
+            self.summary_data
+        )
+
+        self.write_summary_to_csv(
+            f"{output_prefix}task_usage_report_by_region.csv",
+            ["REGION", "ENV", "DATE", "TOTAL_JOBS"],
+            self.summary_data_region
+        )
+        
+        logging.info("CSV processing completed successfully")
+        return True
+    except Exception as e:
+        logging.error(f"Error in CSV processing: {str(e)}")
+        return False
