@@ -1,0 +1,67 @@
+def get_password_from_config(config):
+    """Get decrypted password from config if available."""
+    if 'PASSWORD_ENCRYPTED' in config:
+        from lib.secure_config import SecureConfig
+        return SecureConfig.decrypt_password(config['PASSWORD_ENCRYPTED'])
+    return None
+
+def create_session(config: Dict) -> requests.Session:
+    """Create a configured requests session for Confluence API."""
+    session = requests.Session()
+    
+    # Try different authentication methods
+    auth_type = config.get('AUTH_TYPE', 'basic')
+    
+    if auth_type == 'basic':
+        # First try to get password from environment variable
+        password = os.environ.get('CONFLUENCE_PASSWORD')
+        
+        # If not found, try to get decrypted password from config
+        if not password:
+            password = get_password_from_config(config)
+        
+        if password:
+            # Use password from environment or decrypted from config
+            session.auth = HTTPBasicAuth(config['USERNAME'], password)
+        elif 'API_TOKEN' in config:
+            # Fall back to API token if available
+            session.auth = HTTPBasicAuth(config['USERNAME'], config['API_TOKEN'])
+        else:
+            logging.error("No authentication credentials found.")
+            return None
+    elif auth_type == 'jwt':
+        # JWT token authentication
+        token = os.environ.get('CONFLUENCE_TOKEN') or config.get('API_TOKEN')
+        if token:
+            session.headers.update({
+                "Authorization": f"Bearer {token}"
+            })
+        else:
+            logging.error("No token available for JWT authentication")
+            return None
+    elif auth_type == 'cookie':
+        # Cookie-based authentication
+        cookie = os.environ.get('CONFLUENCE_COOKIE') or config.get('SESSION_COOKIE')
+        if cookie:
+            session.headers.update({
+                "Cookie": cookie
+            })
+        else:
+            logging.error("No cookie available for cookie authentication")
+            return None
+    
+    # Common headers
+    session.headers.update({
+        "Content-Type": "application/json",
+        "X-Atlassian-Token": "no-check"
+    })
+    
+    # Handle proxy settings if provided
+    if 'PROXY' in config:
+        session.proxies = {
+            "http": config['PROXY'],
+            "https": config['PROXY']
+        }
+    
+    session.verify = False
+    return session
