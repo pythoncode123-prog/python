@@ -156,29 +156,21 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
         month_name = chart_df['DATE'].dt.strftime('%b').iloc[0] if not chart_df.empty else "Month"
         chart_title = f"Peak of {month_name}"
         
-        # Use table-chart macro instead of chart macro for better compatibility
+        # Since Confluence is defaulting to pie charts, let's create a proper data setup for better visualization
         return f"""
 <ac:structured-macro ac:name="table-chart">
-    <ac:parameter ac:name="type">bar</ac:parameter>
+    <ac:parameter ac:name="type">pie</ac:parameter>
     <ac:parameter ac:name="title">{chart_title}</ac:parameter>
     <ac:parameter ac:name="is3d">true</ac:parameter>
-    <ac:parameter ac:name="legend">true</ac:parameter>
-    <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
-    <ac:parameter ac:name="columns">Baseline,Total Jobs</ac:parameter>
+    <ac:parameter ac:name="legend">false</ac:parameter>
     <ac:rich-text-body>
         <table class="wrapped">
-            <colgroup>
-                <col/>
-                <col/>
-                <col/>
-            </colgroup>
             <tbody>
                 <tr>
                     <th>Date</th>
-                    <th>Baseline</th>
                     <th>Total Jobs</th>
                 </tr>
-                {chr(10).join([f"<tr><td>{row['FormattedDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>" for _, row in chart_df.iterrows()])}
+                {chr(10).join([f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>" for _, row in chart_df.iterrows()])}
             </tbody>
         </table>
     </ac:rich-text-body>
@@ -204,48 +196,27 @@ def generate_region_chart(df: pd.DataFrame) -> str:
         # Ensure TOTAL_JOBS is numeric
         df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
         
-        # Format the DATE column for display
-        df['FormattedDate'] = df['DATE'].dt.strftime('%m/%d/%Y')
-        
-        # Group by date and region
-        df_region = df.groupby(['DATE', 'FormattedDate', 'REGION'], as_index=False)['TOTAL_JOBS'].sum()
-        pivot_df = df_region.pivot_table(index=['DATE', 'FormattedDate'], columns='REGION', values='TOTAL_JOBS', aggfunc='sum').fillna(0)
-        
-        # Make the date index available for table generation
-        pivot_df = pivot_df.reset_index()
-        
-        # Get column headers (region names)
-        region_columns = [col for col in pivot_df.columns if col not in ['DATE', 'FormattedDate']]
-        
-        # Generate headers for the table
-        table_headers = ["<tr><th>Date</th>"] + [f"<th>{col}</th>" for col in region_columns] + ["</tr>"]
+        # Aggregate jobs by region (ignore dates for pie chart)
+        region_summary = df.groupby('REGION', as_index=False)['TOTAL_JOBS'].sum()
         
         # Generate table rows
         table_rows = []
-        for _, row in pivot_df.iterrows():
-            formatted_date = row['FormattedDate']
-            cells = [f"<td>{formatted_date}</td>"]
-            for col in region_columns:
-                cells.append(f"<td>{int(row[col])}</td>")
-            table_rows.append(f"<tr>{''.join(cells)}</tr>")
+        for _, row in region_summary.iterrows():
+            table_rows.append(f"<tr><td>{row['REGION']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
         
-        # Use table-chart macro instead of chart macro for better compatibility
+        # Use pie chart for region breakdown
         return f"""
 <ac:structured-macro ac:name="table-chart">
-    <ac:parameter ac:name="type">bar</ac:parameter>
-    <ac:parameter ac:name="title">Total Jobs by Region</ac:parameter>
+    <ac:parameter ac:name="type">pie</ac:parameter>
+    <ac:parameter ac:name="title">Jobs by Region</ac:parameter>
     <ac:parameter ac:name="is3d">true</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
-    <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
     <ac:rich-text-body>
         <table class="wrapped">
-            <colgroup>
-                {"".join([f"<col/>" for _ in range(len(region_columns)+1)])}
-            </colgroup>
             <tbody>
                 <tr>
-                    <th>Date</th>
-                    {chr(10).join([f"<th>{col}</th>" for col in region_columns])}
+                    <th>Region</th>
+                    <th>Total Jobs</th>
                 </tr>
                 {chr(10).join(table_rows)}
             </tbody>
@@ -256,7 +227,10 @@ def generate_region_chart(df: pd.DataFrame) -> str:
 <h3>Total Jobs by Region</h3>
 <table class="wrapped">
     <tbody>
-        {"".join(table_headers)}
+        <tr>
+            <th>Region</th>
+            <th>Total Jobs</th>
+        </tr>
         {"".join(table_rows)}
     </tbody>
 </table>
@@ -303,32 +277,8 @@ def generate_daily_trend_chart(df: pd.DataFrame) -> str:
         for _, row in df_summary.iterrows():
             rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
         
-        # Use table-chart macro with line type for better compatibility
+        # Since pie charts don't work well for time series, just use a table
         return f"""
-<ac:structured-macro ac:name="table-chart">
-    <ac:parameter ac:name="type">line</ac:parameter>
-    <ac:parameter ac:name="title">Daily Job Volume Trend</ac:parameter>
-    <ac:parameter ac:name="is3d">false</ac:parameter>
-    <ac:parameter ac:name="legend">false</ac:parameter>
-    <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
-    <ac:parameter ac:name="columns">Total Jobs</ac:parameter>
-    <ac:rich-text-body>
-        <table class="wrapped">
-            <colgroup>
-                <col/>
-                <col/>
-            </colgroup>
-            <tbody>
-                <tr>
-                    <th>Date</th>
-                    <th>Total Jobs</th>
-                </tr>
-                {chr(10).join([f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>" for _, row in df_summary.iterrows()])}
-            </tbody>
-        </table>
-    </ac:rich-text-body>
-</ac:structured-macro>
-
 <h3>Daily Job Volumes</h3>
 <table class="wrapped">
     <tbody>
@@ -633,7 +583,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         baseline = config.get('BASELINE', 1899206)
         
         # Generate the report content
-        execution_timestamp = datetime.strptime('2025-06-26 23:18:14', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
+        execution_timestamp = datetime.strptime('2025-06-26 23:25:56', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
         execution_user = 'satish537'  # Updated username
         
         content = f"""
