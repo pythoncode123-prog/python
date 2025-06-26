@@ -145,7 +145,7 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
         # Format the DATE column for display
         chart_df['FormattedDate'] = chart_df['DATE'].dt.strftime('%m/%d/%Y')
         
-        # Generate table rows
+        # Generate table rows for the data table below the chart
         table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Total Jobs</th><th>Variation</th></tr>"]
         for _, row in chart_df.iterrows():
             table_rows.append(
@@ -156,21 +156,22 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
         month_name = chart_df['DATE'].dt.strftime('%b').iloc[0] if not chart_df.empty else "Month"
         chart_title = f"Peak of {month_name}"
         
-        # Since Confluence is defaulting to pie charts, let's create a proper data setup for better visualization
+        # Since we can only get pie charts, we'll create a two-column table with Baseline and Total Jobs
+        chart_rows = []
+        for _, row in chart_df.iterrows():
+            chart_rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+        
         return f"""
-<ac:structured-macro ac:name="table-chart">
-    <ac:parameter ac:name="type">pie</ac:parameter>
+<ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">{chart_title}</ac:parameter>
-    <ac:parameter ac:name="is3d">true</ac:parameter>
-    <ac:parameter ac:name="legend">false</ac:parameter>
     <ac:rich-text-body>
-        <table class="wrapped">
+        <table>
             <tbody>
                 <tr>
                     <th>Date</th>
                     <th>Total Jobs</th>
                 </tr>
-                {chr(10).join([f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>" for _, row in chart_df.iterrows()])}
+                {chr(10).join(chart_rows)}
             </tbody>
         </table>
     </ac:rich-text-body>
@@ -204,15 +205,12 @@ def generate_region_chart(df: pd.DataFrame) -> str:
         for _, row in region_summary.iterrows():
             table_rows.append(f"<tr><td>{row['REGION']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
         
-        # Use pie chart for region breakdown
+        # Use simple chart macro for pie chart
         return f"""
-<ac:structured-macro ac:name="table-chart">
-    <ac:parameter ac:name="type">pie</ac:parameter>
+<ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">Jobs by Region</ac:parameter>
-    <ac:parameter ac:name="is3d">true</ac:parameter>
-    <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:rich-text-body>
-        <table class="wrapped">
+        <table>
             <tbody>
                 <tr>
                     <th>Region</th>
@@ -583,7 +581,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         baseline = config.get('BASELINE', 1899206)
         
         # Generate the report content
-        execution_timestamp = datetime.strptime('2025-06-26 23:25:56', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
+        execution_timestamp = datetime.strptime('2025-06-26 23:43:33', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
         execution_user = 'satish537'  # Updated username
         
         content = f"""
