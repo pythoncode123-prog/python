@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+import os
+import sys
+import json
+import logging
+from datetime import datetime
+import argparse
+
+# Add the project root to the Python path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from src.workflow import run_workflow
+from lib.secure_config import SecureConfig
+
+# Configuration 
+CONFIG_FILE = 'config/config.ini'
+QUERY_FILE = 'config/query.sql'
+OUTPUT_CSV = 'data.csv'
+EXECUTION_TIMESTAMP = datetime.strptime('2025-06-26 02:32:24', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
+EXECUTION_USER = 'satish537'
+
+def setup_logging():
+    """Set up logging configuration."""
+    log_file = f"workflow_{EXECUTION_TIMESTAMP.strftime('%Y%m%d_%H%M%S')}.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+
+def check_password_available():
+    """Check if password is available either in environment or as encrypted in config."""
+    # Check environment variable first
+    if os.environ.get("CONFLUENCE_PASSWORD"):
+        return True
+        
+    # Check for encrypted password in config
+    if os.path.exists("config.json"):
+        try:
+            with open("config.json", 'r') as f:
+                config = json.load(f)
+            if 'PASSWORD_ENCRYPTED' in config:
+                # Check if key file exists
+                if os.path.exists(SecureConfig.KEY_FILE):
+                    return True
+        except Exception:
+            pass
+    
+    return False
+
+def main():
+    """Main entry point."""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Run data workflow")
+    parser.add_argument("--test", action="store_true", help="Run in test mode using predefined test CSV file")
+    parser.add_argument("--no-publish", action="store_true", help="Skip actual publishing to Confluence in test mode")
+    args = parser.parse_args()
+    
+    # Setup logging
+    setup_logging()
+    
+    # Create config directory if it doesn't exist
+    os.makedirs('config', exist_ok=True)
+    
+    # If not in test mode, check if config files exist
+    if not args.test:
+        if not os.path.exists(CONFIG_FILE):
+            logging.error(f"Config file {CONFIG_FILE} not found.")
+            return 1
+            
+        if not os.path.exists(QUERY_FILE):
+            logging.error(f"Query file {QUERY_FILE} not found.")
+            return 1
+    
+    # Check for password availability if publishing
+    if not args.no_publish and not check_password_available():
+        print("No Confluence authentication credentials found.")
+        print("Please either:")
+        print("1. Set CONFLUENCE_PASSWORD environment variable")
+        print("2. Run setup_secure_config.py to encrypt your password in config.json")
+        print("3. Use --no-publish flag to skip publishing")
+        return 1
+    
+    # Run the workflow
+    return run_workflow(
+        CONFIG_FILE,
+        QUERY_FILE,
+        OUTPUT_CSV,
+        EXECUTION_TIMESTAMP,
+        EXECUTION_USER,
+        test_mode=args.test,
+        publish_test=not args.no_publish
+    )
+
+if __name__ == "__main__":
+    sys.exit(main())
