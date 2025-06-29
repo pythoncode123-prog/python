@@ -164,12 +164,10 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
             + "\n".join(chart_rows) +
             "\n{chart}"
         )
-        
-        # Combine chart and table
-        return f"""
-{chart_macro}
+        table_str = "\n".join(table_rows)
+        return f"""{chart_macro}
 
-{"\n".join(table_rows)}
+{table_str}
 """
     except Exception as e:
         logging.error(f"Error generating table and chart: {str(e)}")
