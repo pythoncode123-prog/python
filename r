@@ -131,35 +131,32 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
         # Format dates and prepare data
         df['FormattedDate'] = pd.to_datetime(df['DATE']).dt.strftime('%-m/%-d/%Y')
         
-        # Generate chart data in Confluence wiki markup format
-        chart_rows = ["|| Date || Baseline || Total Jobs ||"]
-        table_rows = ["|| Date || Baseline || Total Jobs || Variation ||"]
+        # Create the chart string in exact format needed
+        chart_data = []
+        chart_data.append("|| Date || Baseline || Total Jobs ||")
         
+        # Add each data point in the exact format needed
         for _, row in df.iterrows():
             total_jobs = int(row['TOTAL_JOBS'])
-            variation = baseline - total_jobs
-            
-            # Add data for chart (without table markup)
-            chart_rows.append(f"{row['FormattedDate']}|{baseline}|{total_jobs}")
-            
-            # Add data for table (with table markup)
-            table_rows.append(f"| {row['FormattedDate']} | {baseline} | {total_jobs} | {variation} |")
+            chart_data.append(f"{row['FormattedDate']} || {baseline} || {total_jobs}")
         
-        # Create the chart using Confluence chart macro
+        # Create the chart macro with exact formatting
         chart_macro = (
-            "{chart:type=column"
-            "|title=4th Peak of Apr"
-            "|legend=true"
-            "|height=200"
-            "}\n"
-            + "\n".join(chart_rows) +
+            "{chart:type=column|title=4th Peak of Apr|legend=true|height=200}\n"
+            + "\n".join(chart_data) +
             "\n{chart}"
         )
         
-        # Create the table
-        table = "\n".join(table_rows)
+        # Create the table data
+        table_data = []
+        table_data.append("|| Date || Baseline || Total Jobs || Variation ||")
+        for _, row in df.iterrows():
+            total_jobs = int(row['TOTAL_JOBS'])
+            variation = baseline - total_jobs
+            table_data.append(f"| {row['FormattedDate']} | {baseline} | {total_jobs} | {variation} |")
         
-        return f"{chart_macro}\n\n{table}"
+        # Combine chart and table
+        return f"{chart_macro}\n\n" + "\n".join(table_data)
         
     except Exception as e:
         logging.error(f"Error generating table and chart: {str(e)}")
