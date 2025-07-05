@@ -145,11 +145,13 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
         # Format the DATE column for display
         chart_df['FormattedDate'] = chart_df['DATE'].dt.strftime('%m/%d/%Y')
         
-        # Generate table rows for the data table below the chart
+        # Generate table rows for the data table below the chart (with Variation column)
         table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Total Jobs</th><th>Variation</th></tr>"]
         for _, row in chart_df.iterrows():
+            # Add color coding to variation - green if positive (below baseline), red if negative
+            variation_style = 'style="background-color: #90EE90;"' if row['Variation'] > 0 else 'style="background-color: #FFB6C1;"'
             table_rows.append(
-                f"<tr><td>{row['FormattedDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['TOTAL_JOBS'])}</td><td>{int(row['Variation'])}</td></tr>"
+                f"<tr><td>{row['FormattedDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['TOTAL_JOBS'])}</td><td {variation_style}>{int(row['Variation'])}</td></tr>"
             )
         
         # Create a chart title based on the month
@@ -190,6 +192,9 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
     <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:parameter ac:name="dataDisplay">true</ac:parameter>
     <ac:parameter ac:name="stacked">false</ac:parameter>
+    <ac:parameter ac:name="showValues">true</ac:parameter>
+    <ac:parameter ac:name="valuePosition">inside</ac:parameter>
+    <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
