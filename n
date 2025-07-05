@@ -278,7 +278,7 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
         df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
         
         # Get unique regions and dates
-        regions = df['REGION'].unique()
+        regions = sorted(df['REGION'].unique())
         dates = sorted(df['DATE'].unique())
         
         # Create pivot table for the chart
@@ -286,13 +286,13 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
         pivot_df = pivot_df.reset_index()
         pivot_df['FormattedDate'] = pd.to_datetime(pivot_df['DATE']).dt.strftime('%m/%d/%Y')
         
-        # Create chart table header
+        # Create chart table header with Date as first column
         chart_table_rows = ["<tr><th>Date</th>"]
         for region in regions:
             chart_table_rows[0] += f"<th>{region}</th>"
         chart_table_rows[0] += "</tr>"
         
-        # Add data rows
+        # Add data rows with formatted dates
         for _, row in pivot_df.iterrows():
             data_row = f"<tr><td>{row['FormattedDate']}</td>"
             for region in regions:
@@ -309,8 +309,12 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="legendPosition">bottom</ac:parameter>
     <ac:parameter ac:name="dataDisplay">true</ac:parameter>
-    <ac:parameter ac:name="showValues">true</ac:parameter>
+    <ac:parameter ac:name="showValues">false</ac:parameter>
+    <ac:parameter ac:name="xAxisTitle">Date</ac:parameter>
+    <ac:parameter ac:name="yAxisTitle">Total Jobs</ac:parameter>
+    <ac:parameter ac:name="categoryLabelPosition">down</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -336,7 +340,7 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
         df_summary['Baseline'] = baseline
         df_summary['Max_Range'] = 2000000
         
-        # Create chart table
+        # Create chart table with Date as first column
         chart_table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Peaks</th><th>Max Range</th></tr>"]
         for _, row in df_summary.iterrows():
             chart_table_rows.append(
@@ -351,8 +355,12 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="legendPosition">bottom</ac:parameter>
     <ac:parameter ac:name="dataDisplay">true</ac:parameter>
-    <ac:parameter ac:name="showValues">true</ac:parameter>
+    <ac:parameter ac:name="showValues">false</ac:parameter>
+    <ac:parameter ac:name="xAxisTitle">Date</ac:parameter>
+    <ac:parameter ac:name="yAxisTitle">Jobs Count</ac:parameter>
+    <ac:parameter ac:name="categoryLabelPosition">down</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -379,7 +387,7 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
             df_monthly['FormattedDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
             
             # Get unique regions and dates
-            regions = df_monthly['REGION'].unique()
+            regions = sorted(df_monthly['REGION'].unique())
             dates = sorted(df_monthly['DATE'].unique())
             
             # Create pivot table
@@ -387,13 +395,13 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
             pivot_df = pivot_df.reset_index()
             pivot_df['FormattedDate'] = pd.to_datetime(pivot_df['DATE']).dt.strftime('%m/%d/%Y')
             
-            # Create chart table header
+            # Create chart table header with Date as first column
             chart_table_rows = ["<tr><th>Date</th>"]
             for region in regions:
                 chart_table_rows[0] += f"<th>{region}</th>"
             chart_table_rows[0] += "</tr>"
             
-            # Add data rows
+            # Add data rows with formatted dates
             for _, row in pivot_df.iterrows():
                 data_row = f"<tr><td>{row['FormattedDate']}</td>"
                 for region in regions:
@@ -420,11 +428,15 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="height">500</ac:parameter>
     <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="legendPosition">bottom</ac:parameter>
     <ac:parameter ac:name="dataDisplay">true</ac:parameter>
     <ac:parameter ac:name="showValues">true</ac:parameter>
     <ac:parameter ac:name="valuePosition">inside</ac:parameter>
     <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
     <ac:parameter ac:name="stacked">false</ac:parameter>
+    <ac:parameter ac:name="xAxisTitle">Date</ac:parameter>
+    <ac:parameter ac:name="yAxisTitle">Total Jobs</ac:parameter>
+    <ac:parameter ac:name="categoryLabelPosition">down</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
