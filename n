@@ -156,7 +156,7 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
         month_name = chart_df['DATE'].dt.strftime('%b').iloc[0] if not chart_df.empty else "Month"
         chart_title = f"4th Peak of {month_name}:"
         
-        # Create proper column chart with both Baseline and Total Jobs
+        # Create chart with bar type (more widely supported than column)
         chart_rows = []
         for _, row in chart_df.iterrows():
             chart_rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
@@ -164,12 +164,11 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
         return f"""
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">{chart_title}</ac:parameter>
-    <ac:parameter ac:name="type">column</ac:parameter>
-    <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
+    <ac:parameter ac:name="type">bar</ac:parameter>
+    <ac:parameter ac:name="orientation">vertical</ac:parameter>
     <ac:parameter ac:name="width">600</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:parameter ac:name="dataDisplay">true</ac:parameter>
-    <ac:parameter ac:name="colors">olive,maroon</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -287,12 +286,12 @@ def generate_daily_trend_chart(df: pd.DataFrame) -> str:
         for _, row in df_summary.iterrows():
             chart_rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
         
-        # Use line chart for daily trends
+        # Use area chart instead of line (better supported)
         return f"""
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">Daily Job Volumes Trend</ac:parameter>
-    <ac:parameter ac:name="type">line</ac:parameter>
-    <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
+    <ac:parameter ac:name="type">area</ac:parameter>
+    <ac:parameter ac:name="orientation">vertical</ac:parameter>
     <ac:parameter ac:name="width">600</ac:parameter>
     <ac:parameter ac:name="height">300</ac:parameter>
     <ac:parameter ac:name="dataDisplay">true</ac:parameter>
