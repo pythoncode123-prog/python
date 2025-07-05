@@ -268,7 +268,175 @@ def generate_region_chart(df: pd.DataFrame) -> str:
         logging.error(f"Error generating region chart: {str(e)}")
         return f"<p>Error generating region chart: {str(e)}</p>"
 
-def generate_daily_summary_table(df: pd.DataFrame) -> str:
+def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
+    """Generate the daily usage chart by region (line chart)."""
+    try:
+        if not {'DATE', 'REGION', 'TOTAL_JOBS'}.issubset(df.columns):
+            return "<p>Missing required columns for daily usage by region chart: DATE, REGION, TOTAL_JOBS</p>"
+
+        # Ensure TOTAL_JOBS is numeric
+        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        # Get unique regions and dates
+        regions = df['REGION'].unique()
+        dates = sorted(df['DATE'].unique())
+        
+        # Create pivot table for the chart
+        pivot_df = df.pivot_table(index='DATE', columns='REGION', values='TOTAL_JOBS', fill_value=0)
+        pivot_df = pivot_df.reset_index()
+        pivot_df['FormattedDate'] = pd.to_datetime(pivot_df['DATE']).dt.strftime('%m/%d/%Y')
+        
+        # Create chart table header
+        chart_table_rows = ["<tr><th>Date</th>"]
+        for region in regions:
+            chart_table_rows[0] += f"<th>{region}</th>"
+        chart_table_rows[0] += "</tr>"
+        
+        # Add data rows
+        for _, row in pivot_df.iterrows():
+            data_row = f"<tr><td>{row['FormattedDate']}</td>"
+            for region in regions:
+                value = int(row.get(region, 0)) if pd.notna(row.get(region, 0)) else 0
+                data_row += f"<td>{value}</td>"
+            data_row += "</tr>"
+            chart_table_rows.append(data_row)
+        
+        return f"""
+<h3>Daily Task Usage Report by Region</h3>
+<ac:structured-macro ac:name="chart">
+    <ac:parameter ac:name="title">Daily Task Usage Report</ac:parameter>
+    <ac:parameter ac:name="type">line</ac:parameter>
+    <ac:parameter ac:name="width">800</ac:parameter>
+    <ac:parameter ac:name="height">400</ac:parameter>
+    <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">true</ac:parameter>
+    <ac:parameter ac:name="showValues">true</ac:parameter>
+    <ac:rich-text-body>
+        <table>
+            <tbody>
+                {"".join(chart_table_rows)}
+            </tbody>
+        </table>
+    </ac:rich-text-body>
+</ac:structured-macro>
+"""
+    except Exception as e:
+        logging.error(f"Error generating daily usage by region chart: {str(e)}")
+        return f"<p>Error generating daily usage by region chart: {str(e)}</p>"
+
+def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
+    """Generate the variation with baseline chart (area chart)."""
+    try:
+        # Ensure TOTAL_JOBS is numeric
+        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        # Aggregate by date
+        df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+        df_summary['FormattedDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
+        df_summary['Baseline'] = baseline
+        df_summary['Max_Range'] = 2000000
+        
+        # Create chart table
+        chart_table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Peaks</th><th>Max Range</th></tr>"]
+        for _, row in df_summary.iterrows():
+            chart_table_rows.append(
+                f"<tr><td>{row['FormattedDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['TOTAL_JOBS'])}</td><td>{int(row['Max_Range'])}</td></tr>"
+            )
+        
+        return f"""
+<h3>Variation with Baseline Data</h3>
+<ac:structured-macro ac:name="chart">
+    <ac:parameter ac:name="title">Variation with Baseline Data</ac:parameter>
+    <ac:parameter ac:name="type">area</ac:parameter>
+    <ac:parameter ac:name="width">800</ac:parameter>
+    <ac:parameter ac:name="height">400</ac:parameter>
+    <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">true</ac:parameter>
+    <ac:parameter ac:name="showValues">true</ac:parameter>
+    <ac:rich-text-body>
+        <table>
+            <tbody>
+                {"".join(chart_table_rows)}
+            </tbody>
+        </table>
+    </ac:rich-text-body>
+</ac:structured-macro>
+"""
+    except Exception as e:
+        logging.error(f"Error generating baseline variation chart: {str(e)}")
+        return f"<p>Error generating baseline variation chart: {str(e)}</p>"
+
+def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
+    """Generate the overall monthly task usage chart (column chart with values inside)."""
+    try:
+        # Ensure TOTAL_JOBS is numeric
+        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        # Check if we have REGION column for detailed breakdown
+        if 'REGION' in df.columns:
+            # Group by date and region
+            df_monthly = df.groupby(['DATE', 'REGION'], as_index=False)['TOTAL_JOBS'].sum()
+            df_monthly['FormattedDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
+            
+            # Get unique regions and dates
+            regions = df_monthly['REGION'].unique()
+            dates = sorted(df_monthly['DATE'].unique())
+            
+            # Create pivot table
+            pivot_df = df_monthly.pivot_table(index='DATE', columns='REGION', values='TOTAL_JOBS', fill_value=0)
+            pivot_df = pivot_df.reset_index()
+            pivot_df['FormattedDate'] = pd.to_datetime(pivot_df['DATE']).dt.strftime('%m/%d/%Y')
+            
+            # Create chart table header
+            chart_table_rows = ["<tr><th>Date</th>"]
+            for region in regions:
+                chart_table_rows[0] += f"<th>{region}</th>"
+            chart_table_rows[0] += "</tr>"
+            
+            # Add data rows
+            for _, row in pivot_df.iterrows():
+                data_row = f"<tr><td>{row['FormattedDate']}</td>"
+                for region in regions:
+                    value = int(row.get(region, 0)) if pd.notna(row.get(region, 0)) else 0
+                    data_row += f"<td>{value}</td>"
+                data_row += "</tr>"
+                chart_table_rows.append(data_row)
+        else:
+            # Simple aggregation by date if no region data
+            df_monthly = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+            df_monthly['FormattedDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
+            
+            chart_table_rows = ["<tr><th>Date</th><th>Total Jobs</th></tr>"]
+            for _, row in df_monthly.iterrows():
+                chart_table_rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+        
+        return f"""
+<h3>Overall Monthly Task Usage Report</h3>
+<ac:structured-macro ac:name="chart">
+    <ac:parameter ac:name="title">Overall Monthly Task Usage Report</ac:parameter>
+    <ac:parameter ac:name="type">bar</ac:parameter>
+    <ac:parameter ac:name="orientation">vertical</ac:parameter>
+    <ac:parameter ac:name="width">900</ac:parameter>
+    <ac:parameter ac:name="height">500</ac:parameter>
+    <ac:parameter ac:name="3D">true</ac:parameter>
+    <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">true</ac:parameter>
+    <ac:parameter ac:name="showValues">true</ac:parameter>
+    <ac:parameter ac:name="valuePosition">inside</ac:parameter>
+    <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
+    <ac:parameter ac:name="stacked">false</ac:parameter>
+    <ac:rich-text-body>
+        <table>
+            <tbody>
+                {"".join(chart_table_rows)}
+            </tbody>
+        </table>
+    </ac:rich-text-body>
+</ac:structured-macro>
+"""
+    except Exception as e:
+        logging.error(f"Error generating monthly task usage chart: {str(e)}")
+        return f"<p>Error generating monthly task usage chart: {str(e)}</p>"
     """Generate the daily summary table for the Confluence page."""
     try:
         # Ensure TOTAL_JOBS is numeric
@@ -645,6 +813,9 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
 <p><strong>Last updated:</strong> {execution_timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
 <p><strong>Generated by:</strong> {execution_user}</p>
 {generate_table_and_chart(df, baseline)}
+{generate_daily_usage_by_region_chart(df)}
+{generate_baseline_variation_chart(df, baseline)}
+{generate_monthly_task_usage_chart(df)}
 {generate_region_chart(df)}
 {generate_daily_summary_table(df)}
 {generate_daily_trend_chart(df)}
