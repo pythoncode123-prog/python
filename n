@@ -156,10 +156,11 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
         month_name = chart_df['DATE'].dt.strftime('%b').iloc[0] if not chart_df.empty else "Month"
         chart_title = f"4th Peak of {month_name}:"
         
-        # Create simplified chart with only supported parameters
-        chart_rows = []
+        # Create chart data with each date as a row, and Baseline/Total Jobs as columns
+        # This structure creates side-by-side bars for each date
+        chart_table_rows = ["<tr><th></th><th>Baseline</th><th>Total Jobs</th></tr>"]
         for _, row in chart_df.iterrows():
-            chart_rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+            chart_table_rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
         
         return f"""
 <ac:structured-macro ac:name="chart">
@@ -174,12 +175,7 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
     <ac:rich-text-body>
         <table>
             <tbody>
-                <tr>
-                    <th>Date</th>
-                    <th>Baseline</th>
-                    <th>Total Jobs</th>
-                </tr>
-                {chr(10).join(chart_rows)}
+                {"".join(chart_table_rows)}
             </tbody>
         </table>
     </ac:rich-text-body>
