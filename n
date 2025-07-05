@@ -281,23 +281,30 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
         regions = sorted(df['REGION'].unique())
         dates = sorted(df['DATE'].unique())
         
-        # Create pivot table for the chart
+        # Create pivot table - TRANSPOSE IT so dates are rows (x-axis) and regions are columns (series)
         pivot_df = df.pivot_table(index='DATE', columns='REGION', values='TOTAL_JOBS', fill_value=0)
         pivot_df = pivot_df.reset_index()
         pivot_df['FormattedDate'] = pd.to_datetime(pivot_df['DATE']).dt.strftime('%m/%d/%Y')
         
-        # Create chart table header with Date as first column
+        # CRITICAL: Reorder columns to put FormattedDate first, then regions
+        # This makes dates the x-axis and regions the data series
+        column_order = ['FormattedDate'] + [col for col in regions if col in pivot_df.columns]
+        pivot_df = pivot_df[column_order]
+        
+        # Create chart table header - FormattedDate first (x-axis), then regions (series)
         chart_table_rows = ["<tr><th>Date</th>"]
         for region in regions:
-            chart_table_rows[0] += f"<th>{region}</th>"
+            if region in pivot_df.columns:
+                chart_table_rows[0] += f"<th>{region}</th>"
         chart_table_rows[0] += "</tr>"
         
-        # Add data rows with formatted dates
+        # Add data rows - each row is a date point with values for each region
         for _, row in pivot_df.iterrows():
             data_row = f"<tr><td>{row['FormattedDate']}</td>"
             for region in regions:
-                value = int(row.get(region, 0)) if pd.notna(row.get(region, 0)) else 0
-                data_row += f"<td>{value}</td>"
+                if region in pivot_df.columns:
+                    value = int(row.get(region, 0)) if pd.notna(row.get(region, 0)) else 0
+                    data_row += f"<td>{value}</td>"
             data_row += "</tr>"
             chart_table_rows.append(data_row)
         
@@ -310,11 +317,8 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:parameter ac:name="legendPosition">bottom</ac:parameter>
-    <ac:parameter ac:name="dataDisplay">true</ac:parameter>
-    <ac:parameter ac:name="showValues">false</ac:parameter>
-    <ac:parameter ac:name="xAxisTitle">Date</ac:parameter>
-    <ac:parameter ac:name="yAxisTitle">Total Jobs</ac:parameter>
-    <ac:parameter ac:name="categoryLabelPosition">down</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">false</ac:parameter>
+    <ac:parameter ac:name="orientation">vertical</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -336,15 +340,17 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
         
         # Aggregate by date
         df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+        df_summary = df_summary.sort_values('DATE')  # Ensure proper date ordering
         df_summary['FormattedDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
         df_summary['Baseline'] = baseline
+        df_summary['Peaks'] = df_summary['TOTAL_JOBS']  # Rename for clarity
         df_summary['Max_Range'] = 2000000
         
-        # Create chart table with Date as first column
+        # CRITICAL: Create table with Date as x-axis (first column) and metrics as series
         chart_table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Peaks</th><th>Max Range</th></tr>"]
         for _, row in df_summary.iterrows():
             chart_table_rows.append(
-                f"<tr><td>{row['FormattedDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['TOTAL_JOBS'])}</td><td>{int(row['Max_Range'])}</td></tr>"
+                f"<tr><td>{row['FormattedDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['Peaks'])}</td><td>{int(row['Max_Range'])}</td></tr>"
             )
         
         return f"""
@@ -356,11 +362,8 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:parameter ac:name="legendPosition">bottom</ac:parameter>
-    <ac:parameter ac:name="dataDisplay">true</ac:parameter>
-    <ac:parameter ac:name="showValues">false</ac:parameter>
-    <ac:parameter ac:name="xAxisTitle">Date</ac:parameter>
-    <ac:parameter ac:name="yAxisTitle">Jobs Count</ac:parameter>
-    <ac:parameter ac:name="categoryLabelPosition">down</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">false</ac:parameter>
+    <ac:parameter ac:name="orientation">vertical</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -384,34 +387,40 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
         if 'REGION' in df.columns:
             # Group by date and region
             df_monthly = df.groupby(['DATE', 'REGION'], as_index=False)['TOTAL_JOBS'].sum()
-            df_monthly['FormattedDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
             
             # Get unique regions and dates
             regions = sorted(df_monthly['REGION'].unique())
             dates = sorted(df_monthly['DATE'].unique())
             
-            # Create pivot table
+            # CRITICAL: Create pivot with DATE as index (x-axis) and REGION as columns (series)
             pivot_df = df_monthly.pivot_table(index='DATE', columns='REGION', values='TOTAL_JOBS', fill_value=0)
             pivot_df = pivot_df.reset_index()
             pivot_df['FormattedDate'] = pd.to_datetime(pivot_df['DATE']).dt.strftime('%m/%d/%Y')
             
-            # Create chart table header with Date as first column
+            # Reorder columns to put FormattedDate first, then regions
+            column_order = ['FormattedDate'] + [col for col in regions if col in pivot_df.columns]
+            pivot_df = pivot_df[column_order]
+            
+            # Create chart table header with Date first (x-axis), then regions (series)
             chart_table_rows = ["<tr><th>Date</th>"]
             for region in regions:
-                chart_table_rows[0] += f"<th>{region}</th>"
+                if region in pivot_df.columns:
+                    chart_table_rows[0] += f"<th>{region}</th>"
             chart_table_rows[0] += "</tr>"
             
-            # Add data rows with formatted dates
+            # Add data rows - each row is a date with values for each region
             for _, row in pivot_df.iterrows():
                 data_row = f"<tr><td>{row['FormattedDate']}</td>"
                 for region in regions:
-                    value = int(row.get(region, 0)) if pd.notna(row.get(region, 0)) else 0
-                    data_row += f"<td>{value}</td>"
+                    if region in pivot_df.columns:
+                        value = int(row.get(region, 0)) if pd.notna(row.get(region, 0)) else 0
+                        data_row += f"<td>{value}</td>"
                 data_row += "</tr>"
                 chart_table_rows.append(data_row)
         else:
             # Simple aggregation by date if no region data
             df_monthly = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+            df_monthly = df_monthly.sort_values('DATE')
             df_monthly['FormattedDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
             
             chart_table_rows = ["<tr><th>Date</th><th>Total Jobs</th></tr>"]
@@ -434,9 +443,7 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="valuePosition">inside</ac:parameter>
     <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
     <ac:parameter ac:name="stacked">false</ac:parameter>
-    <ac:parameter ac:name="xAxisTitle">Date</ac:parameter>
-    <ac:parameter ac:name="yAxisTitle">Total Jobs</ac:parameter>
-    <ac:parameter ac:name="categoryLabelPosition">down</ac:parameter>
+    <ac:parameter ac:name="orientation">vertical</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
