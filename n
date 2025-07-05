@@ -280,33 +280,29 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
         # Sort by date to ensure proper timeline
         df_sorted = df.sort_values('DATE')
         
-        # Group by date first, then pivot regions as columns
-        df_pivot = df_sorted.pivot_table(
-            index='DATE', 
-            columns='REGION', 
-            values='TOTAL_JOBS', 
-            aggfunc='sum',
-            fill_value=0
-        ).reset_index()
+        # Get unique regions and dates
+        regions = sorted(df_sorted['REGION'].unique())
+        dates = sorted(df_sorted['DATE'].unique())
         
         # Format dates for display
-        df_pivot['Date'] = df_pivot['DATE'].dt.strftime('%m/%d')
+        formatted_dates = [pd.to_datetime(date).strftime('%m/%d') for date in dates]
         
-        # Get region columns (excluding DATE and Date)
-        region_columns = [col for col in df_pivot.columns if col not in ['DATE', 'Date']]
+        # TRANSPOSE THE DATA STRUCTURE
+        # Since Confluence is reading it backwards, let's build it the opposite way
+        # Put regions as rows (first column) and dates as columns
         
-        # CRITICAL: Build table with Date as FIRST column, regions as subsequent columns
-        # This forces Date to be x-axis and regions to be data series
-        chart_table_rows = ["<tr><th>Date</th>"]
-        for region in sorted(region_columns):
-            chart_table_rows[0] += f"<th>{region}</th>"
+        # Create header with Region first, then dates
+        chart_table_rows = ["<tr><th>Region</th>"]
+        for date_str in formatted_dates:
+            chart_table_rows[0] += f"<th>{date_str}</th>"
         chart_table_rows[0] += "</tr>"
         
-        # Add data rows - each row represents one date point
-        for _, row in df_pivot.iterrows():
-            data_row = f"<tr><td>{row['Date']}</td>"
-            for region in sorted(region_columns):
-                value = int(row[region]) if pd.notna(row[region]) else 0
+        # Add data rows - each row is a region with values for each date
+        for region in regions:
+            data_row = f"<tr><td>{region}</td>"
+            for date in dates:
+                region_date_data = df_sorted[(df_sorted['REGION'] == region) & (df_sorted['DATE'] == date)]
+                value = int(region_date_data['TOTAL_JOBS'].sum()) if not region_date_data.empty else 0
                 data_row += f"<td>{value}</td>"
             data_row += "</tr>"
             chart_table_rows.append(data_row)
@@ -329,7 +325,7 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
     </ac:rich-text-body>
 </ac:structured-macro>
 
-<h4>Sample Data Structure (for debugging):</h4>
+<h4>Transposed Data Structure (for debugging):</h4>
 <table class="wrapped">
     <tbody>
         {chart_table_rows[0]}
@@ -351,18 +347,41 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
         df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
         df_summary = df_summary.sort_values('DATE')
         
-        # Format date
+        # Format dates
         df_summary['Date'] = df_summary['DATE'].dt.strftime('%m/%d')
-        df_summary['Baseline'] = baseline
-        df_summary['Peaks'] = df_summary['TOTAL_JOBS']
-        df_summary['Max_Range'] = 2000000
+        dates = df_summary['Date'].tolist()
         
-        # CRITICAL: Date must be first column for x-axis
-        chart_table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Peaks</th><th>Max Range</th></tr>"]
-        for _, row in df_summary.iterrows():
-            chart_table_rows.append(
-                f"<tr><td>{row['Date']}</td><td>{int(row['Baseline'])}</td><td>{int(row['Peaks'])}</td><td>{int(row['Max_Range'])}</td></tr>"
-            )
+        # Create baseline, peaks, max range data
+        baseline_values = [baseline] * len(dates)
+        peaks_values = df_summary['TOTAL_JOBS'].tolist()
+        max_range_values = [2000000] * len(dates)
+        
+        # TRANSPOSE: Metrics as rows, dates as columns
+        chart_table_rows = ["<tr><th>Metric</th>"]
+        for date_str in dates:
+            chart_table_rows[0] += f"<th>{date_str}</th>"
+        chart_table_rows[0] += "</tr>"
+        
+        # Add Baseline row
+        baseline_row = "<tr><td>Baseline</td>"
+        for value in baseline_values:
+            baseline_row += f"<td>{int(value)}</td>"
+        baseline_row += "</tr>"
+        chart_table_rows.append(baseline_row)
+        
+        # Add Peaks row
+        peaks_row = "<tr><td>Peaks</td>"
+        for value in peaks_values:
+            peaks_row += f"<td>{int(value)}</td>"
+        peaks_row += "</tr>"
+        chart_table_rows.append(peaks_row)
+        
+        # Add Max Range row
+        max_row = "<tr><td>Max Range</td>"
+        for value in max_range_values:
+            max_row += f"<td>{int(value)}</td>"
+        max_row += "</tr>"
+        chart_table_rows.append(max_row)
         
         return f"""
 <h3>Variation with Baseline Data</h3>
@@ -382,7 +401,7 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
     </ac:rich-text-body>
 </ac:structured-macro>
 
-<h4>Sample Data Structure (for debugging):</h4>
+<h4>Transposed Data Structure (for debugging):</h4>
 <table class="wrapped">
     <tbody>
         {chart_table_rows[0]}
@@ -402,34 +421,26 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
         
         # Check if we have REGION column for detailed breakdown
         if 'REGION' in df.columns:
-            # Sort by date and pivot
+            # Sort by date
             df_sorted = df.sort_values('DATE')
             
-            df_pivot = df_sorted.pivot_table(
-                index='DATE', 
-                columns='REGION', 
-                values='TOTAL_JOBS', 
-                aggfunc='sum',
-                fill_value=0
-            ).reset_index()
+            # Get unique regions and dates
+            regions = sorted(df_sorted['REGION'].unique())
+            dates = sorted(df_sorted['DATE'].unique())
+            formatted_dates = [pd.to_datetime(date).strftime('%m/%d') for date in dates]
             
-            # Format dates
-            df_pivot['Date'] = df_pivot['DATE'].dt.strftime('%m/%d')
-            
-            # Get region columns
-            region_columns = [col for col in df_pivot.columns if col not in ['DATE', 'Date']]
-            
-            # CRITICAL: Date first column for x-axis
-            chart_table_rows = ["<tr><th>Date</th>"]
-            for region in sorted(region_columns):
-                chart_table_rows[0] += f"<th>{region}</th>"
+            # TRANSPOSE: Regions as rows, dates as columns
+            chart_table_rows = ["<tr><th>Region</th>"]
+            for date_str in formatted_dates:
+                chart_table_rows[0] += f"<th>{date_str}</th>"
             chart_table_rows[0] += "</tr>"
             
-            # Add data rows
-            for _, row in df_pivot.iterrows():
-                data_row = f"<tr><td>{row['Date']}</td>"
-                for region in sorted(region_columns):
-                    value = int(row[region]) if pd.notna(row[region]) else 0
+            # Add data rows - each row is a region
+            for region in regions:
+                data_row = f"<tr><td>{region}</td>"
+                for date in dates:
+                    region_date_data = df_sorted[(df_sorted['REGION'] == region) & (df_sorted['DATE'] == date)]
+                    value = int(region_date_data['TOTAL_JOBS'].sum()) if not region_date_data.empty else 0
                     data_row += f"<td>{value}</td>"
                 data_row += "</tr>"
                 chart_table_rows.append(data_row)
@@ -437,11 +448,18 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
             # Simple aggregation by date if no region data
             df_monthly = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
             df_monthly = df_monthly.sort_values('DATE')
-            df_monthly['Date'] = df_monthly['DATE'].dt.strftime('%m/%d')
+            dates = df_monthly['DATE'].dt.strftime('%m/%d').tolist()
             
-            chart_table_rows = ["<tr><th>Date</th><th>Total Jobs</th></tr>"]
+            chart_table_rows = ["<tr><th>Metric</th>"]
+            for date_str in dates:
+                chart_table_rows[0] += f"<th>{date_str}</th>"
+            chart_table_rows[0] += "</tr>"
+            
+            jobs_row = "<tr><td>Total Jobs</td>"
             for _, row in df_monthly.iterrows():
-                chart_table_rows.append(f"<tr><td>{row['Date']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+                jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+            jobs_row += "</tr>"
+            chart_table_rows.append(jobs_row)
         
         return f"""
 <h3>Overall Monthly Task Usage Report</h3>
@@ -450,7 +468,7 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="type">bar</ac:parameter>
     <ac:parameter ac:name="orientation">vertical</ac:parameter>
     <ac:parameter ac:name="width">900</ac:parameter>
-    <ac:parameter ac:name="height">500</ac:parameter>
+    <ac:parameter ac="height">500</ac:parameter>
     <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:parameter ac:name="dataDisplay">true</ac:parameter>
@@ -465,7 +483,7 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
     </ac:rich-text-body>
 </ac:structured-macro>
 
-<h4>Sample Data Structure (for debugging):</h4>
+<h4>Transposed Data Structure (for debugging):</h4>
 <table class="wrapped">
     <tbody>
         {chart_table_rows[0]}
