@@ -437,6 +437,31 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
     except Exception as e:
         logging.error(f"Error generating monthly task usage chart: {str(e)}")
         return f"<p>Error generating monthly task usage chart: {str(e)}</p>"
+
+def generate_daily_summary_table(df: pd.DataFrame) -> str:
+    """Generate the daily summary table for the Confluence page."""
+    try:
+        # Ensure TOTAL_JOBS is numeric
+        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+        df_summary['FormattedDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
+        
+        rows = ["<tr><th>Date</th><th>Total Jobs</th></tr>"]
+        for _, row in df_summary.iterrows():
+            rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+        
+        return f"""
+<h3>Total Jobs Per Day</h3>
+<table class="wrapped">
+    <tbody>
+        {"".join(rows)}
+    </tbody>
+</table>
+"""
+    except Exception as e:
+        logging.error(f"Error generating daily summary table: {str(e)}")
+        return f"<p>Error generating daily summary table: {str(e)}</p>"
     """Generate the daily summary table for the Confluence page."""
     try:
         # Ensure TOTAL_JOBS is numeric
