@@ -269,7 +269,7 @@ def generate_region_chart(df: pd.DataFrame) -> str:
         return f"<p>Error generating region chart: {str(e)}</p>"
 
 def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
-    """Generate the daily usage chart by region (line chart)."""
+    """Generate the daily usage chart by region (Time Line chart)."""
     try:
         if not {'DATE', 'REGION', 'TOTAL_JOBS'}.issubset(df.columns):
             return "<p>Missing required columns for daily usage by region chart: DATE, REGION, TOTAL_JOBS</p>"
@@ -277,34 +277,42 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
         # Ensure TOTAL_JOBS is numeric
         df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
         
+        # Sort by date to ensure proper timeline
+        df_sorted = df.sort_values('DATE')
+        
         # Get unique regions and dates
-        regions = sorted(df['REGION'].unique())
-        dates = sorted(df['DATE'].unique())
+        regions = sorted(df_sorted['REGION'].unique())
+        dates = sorted(df_sorted['DATE'].unique())
         
-        # Create pivot table - TRANSPOSE IT so dates are rows (x-axis) and regions are columns (series)
-        pivot_df = df.pivot_table(index='DATE', columns='REGION', values='TOTAL_JOBS', fill_value=0)
-        pivot_df = pivot_df.reset_index()
-        pivot_df['FormattedDate'] = pd.to_datetime(pivot_df['DATE']).dt.strftime('%m/%d/%Y')
+        # Create a table with Date column first, then each region as a separate column
+        # This creates the proper structure for timeline charts
         
-        # CRITICAL: Reorder columns to put FormattedDate first, then regions
-        # This makes dates the x-axis and regions the data series
-        column_order = ['FormattedDate'] + [col for col in regions if col in pivot_df.columns]
-        pivot_df = pivot_df[column_order]
+        # Start with dates
+        result_data = []
+        for date in dates:
+            date_str = pd.to_datetime(date).strftime('%Y-%m-%d')  # Use ISO format for timeline
+            row_data = {'Date': date_str}
+            
+            # Add each region's data for this date
+            date_data = df_sorted[df_sorted['DATE'] == date]
+            for region in regions:
+                region_data = date_data[date_data['REGION'] == region]
+                value = int(region_data['TOTAL_JOBS'].sum()) if not region_data.empty else 0
+                row_data[region] = value
+            
+            result_data.append(row_data)
         
-        # Create chart table header - FormattedDate first (x-axis), then regions (series)
+        # Create chart table - Date first, then regions
         chart_table_rows = ["<tr><th>Date</th>"]
         for region in regions:
-            if region in pivot_df.columns:
-                chart_table_rows[0] += f"<th>{region}</th>"
+            chart_table_rows[0] += f"<th>{region}</th>"
         chart_table_rows[0] += "</tr>"
         
-        # Add data rows - each row is a date point with values for each region
-        for _, row in pivot_df.iterrows():
-            data_row = f"<tr><td>{row['FormattedDate']}</td>"
+        # Add data rows
+        for row in result_data:
+            data_row = f"<tr><td>{row['Date']}</td>"
             for region in regions:
-                if region in pivot_df.columns:
-                    value = int(row.get(region, 0)) if pd.notna(row.get(region, 0)) else 0
-                    data_row += f"<td>{value}</td>"
+                data_row += f"<td>{row.get(region, 0)}</td>"
             data_row += "</tr>"
             chart_table_rows.append(data_row)
         
@@ -312,13 +320,14 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
 <h3>Daily Task Usage Report by Region</h3>
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">Daily Task Usage Report</ac:parameter>
-    <ac:parameter ac:name="type">line</ac:parameter>
+    <ac:parameter ac:name="type">timeLine</ac:parameter>
+    <ac:parameter ac:name="dateFormat">yyyy-MM-dd</ac:parameter>
+    <ac:parameter ac:name="timePeriod">daily</ac:parameter>
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
-    <ac:parameter ac:name="legendPosition">bottom</ac:parameter>
+    <ac:parameter ac:name="legendPosition">right</ac:parameter>
     <ac:parameter ac:name="dataDisplay">false</ac:parameter>
-    <ac:parameter ac:name="orientation">vertical</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -333,37 +342,40 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
         return f"<p>Error generating daily usage by region chart: {str(e)}</p>"
 
 def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
-    """Generate the variation with baseline chart (area chart)."""
+    """Generate the variation with baseline chart (Time Line chart)."""
     try:
         # Ensure TOTAL_JOBS is numeric
         df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
         
-        # Aggregate by date
+        # Aggregate by date and sort
         df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
-        df_summary = df_summary.sort_values('DATE')  # Ensure proper date ordering
-        df_summary['FormattedDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
+        df_summary = df_summary.sort_values('DATE')
+        
+        # Format date for timeline
+        df_summary['DateFormatted'] = df_summary['DATE'].dt.strftime('%Y-%m-%d')
         df_summary['Baseline'] = baseline
-        df_summary['Peaks'] = df_summary['TOTAL_JOBS']  # Rename for clarity
+        df_summary['Peaks'] = df_summary['TOTAL_JOBS']
         df_summary['Max_Range'] = 2000000
         
-        # CRITICAL: Create table with Date as x-axis (first column) and metrics as series
+        # Create table with Date first for timeline
         chart_table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Peaks</th><th>Max Range</th></tr>"]
         for _, row in df_summary.iterrows():
             chart_table_rows.append(
-                f"<tr><td>{row['FormattedDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['Peaks'])}</td><td>{int(row['Max_Range'])}</td></tr>"
+                f"<tr><td>{row['DateFormatted']}</td><td>{int(row['Baseline'])}</td><td>{int(row['Peaks'])}</td><td>{int(row['Max_Range'])}</td></tr>"
             )
         
         return f"""
 <h3>Variation with Baseline Data</h3>
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">Variation with Baseline Data</ac:parameter>
-    <ac:parameter ac:name="type">area</ac:parameter>
+    <ac:parameter ac:name="type">timeLine</ac:parameter>
+    <ac:parameter ac:name="dateFormat">yyyy-MM-dd</ac:parameter>
+    <ac:parameter ac:name="timePeriod">daily</ac:parameter>
     <ac:parameter ac:name="width">800</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
-    <ac:parameter ac:name="legendPosition">bottom</ac:parameter>
+    <ac:parameter ac:name="legendPosition">right</ac:parameter>
     <ac:parameter ac:name="dataDisplay">false</ac:parameter>
-    <ac:parameter ac:name="orientation">vertical</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -378,72 +390,70 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
         return f"<p>Error generating baseline variation chart: {str(e)}</p>"
 
 def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
-    """Generate the overall monthly task usage chart (column chart with values inside)."""
+    """Generate the overall monthly task usage chart (Time Line chart for regions by date)."""
     try:
         # Ensure TOTAL_JOBS is numeric
         df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
         
         # Check if we have REGION column for detailed breakdown
         if 'REGION' in df.columns:
-            # Group by date and region
-            df_monthly = df.groupby(['DATE', 'REGION'], as_index=False)['TOTAL_JOBS'].sum()
+            # Sort by date
+            df_sorted = df.sort_values('DATE')
             
             # Get unique regions and dates
-            regions = sorted(df_monthly['REGION'].unique())
-            dates = sorted(df_monthly['DATE'].unique())
+            regions = sorted(df_sorted['REGION'].unique())
+            dates = sorted(df_sorted['DATE'].unique())
             
-            # CRITICAL: Create pivot with DATE as index (x-axis) and REGION as columns (series)
-            pivot_df = df_monthly.pivot_table(index='DATE', columns='REGION', values='TOTAL_JOBS', fill_value=0)
-            pivot_df = pivot_df.reset_index()
-            pivot_df['FormattedDate'] = pd.to_datetime(pivot_df['DATE']).dt.strftime('%m/%d/%Y')
+            # Create proper timeline data structure
+            result_data = []
+            for date in dates:
+                date_str = pd.to_datetime(date).strftime('%Y-%m-%d')
+                row_data = {'Date': date_str}
+                
+                # Add each region's data for this date
+                date_data = df_sorted[df_sorted['DATE'] == date]
+                for region in regions:
+                    region_data = date_data[date_data['REGION'] == region]
+                    value = int(region_data['TOTAL_JOBS'].sum()) if not region_data.empty else 0
+                    row_data[region] = value
+                
+                result_data.append(row_data)
             
-            # Reorder columns to put FormattedDate first, then regions
-            column_order = ['FormattedDate'] + [col for col in regions if col in pivot_df.columns]
-            pivot_df = pivot_df[column_order]
-            
-            # Create chart table header with Date first (x-axis), then regions (series)
+            # Create chart table with Date first, then regions
             chart_table_rows = ["<tr><th>Date</th>"]
             for region in regions:
-                if region in pivot_df.columns:
-                    chart_table_rows[0] += f"<th>{region}</th>"
+                chart_table_rows[0] += f"<th>{region}</th>"
             chart_table_rows[0] += "</tr>"
             
-            # Add data rows - each row is a date with values for each region
-            for _, row in pivot_df.iterrows():
-                data_row = f"<tr><td>{row['FormattedDate']}</td>"
+            # Add data rows
+            for row in result_data:
+                data_row = f"<tr><td>{row['Date']}</td>"
                 for region in regions:
-                    if region in pivot_df.columns:
-                        value = int(row.get(region, 0)) if pd.notna(row.get(region, 0)) else 0
-                        data_row += f"<td>{value}</td>"
+                    data_row += f"<td>{row.get(region, 0)}</td>"
                 data_row += "</tr>"
                 chart_table_rows.append(data_row)
         else:
             # Simple aggregation by date if no region data
             df_monthly = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
             df_monthly = df_monthly.sort_values('DATE')
-            df_monthly['FormattedDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
+            df_monthly['DateFormatted'] = df_monthly['DATE'].dt.strftime('%Y-%m-%d')
             
             chart_table_rows = ["<tr><th>Date</th><th>Total Jobs</th></tr>"]
             for _, row in df_monthly.iterrows():
-                chart_table_rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+                chart_table_rows.append(f"<tr><td>{row['DateFormatted']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
         
         return f"""
 <h3>Overall Monthly Task Usage Report</h3>
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">Overall Monthly Task Usage Report</ac:parameter>
-    <ac:parameter ac:name="type">bar</ac:parameter>
-    <ac:parameter ac:name="orientation">vertical</ac:parameter>
+    <ac:parameter ac:name="type">timeLine</ac:parameter>
+    <ac:parameter ac:name="dateFormat">yyyy-MM-dd</ac:parameter>
+    <ac:parameter ac:name="timePeriod">daily</ac:parameter>
     <ac:parameter ac:name="width">900</ac:parameter>
     <ac:parameter ac:name="height">500</ac:parameter>
-    <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
-    <ac:parameter ac:name="legendPosition">bottom</ac:parameter>
-    <ac:parameter ac:name="dataDisplay">true</ac:parameter>
-    <ac:parameter ac:name="showValues">true</ac:parameter>
-    <ac:parameter ac:name="valuePosition">inside</ac:parameter>
-    <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
-    <ac:parameter ac:name="stacked">false</ac:parameter>
-    <ac:parameter ac:name="orientation">vertical</ac:parameter>
+    <ac:parameter ac:name="legendPosition">right</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">false</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
