@@ -18,7 +18,7 @@ from lib.secure_config import SecureConfig
 CONFIG_FILE = 'config/config.ini'
 QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
-EXECUTION_TIMESTAMP = datetime.strptime('2025-07-06 21:36:27', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
+EXECUTION_TIMESTAMP = datetime.strptime('2025-07-06 21:43:43', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
 EXECUTION_USER = 'satish537'
 
 def setup_logging():
@@ -95,29 +95,56 @@ def update_query_with_date_range(query_path, start_date, end_date):
         with open(query_path, 'r') as f:
             query = f.read()
         
-        # Replace the date range in the query
-        # Find the BETWEEN clause and update the dates
-        pattern = r"BETWEEN\s+TO_DATE\('[^']+', 'YYYY-MM-DD HH24:MI:SS'\)\s+and\s+TO_DATE\('[^']+', 'YYYY-MM-DD HH24:MI:SS'\)"
-        replacement = f"BETWEEN TO_DATE('{start_date}', 'YYYY-MM-DD HH24:MI:SS') and TO_DATE('{end_date}', 'YYYY-MM-DD HH24:MI:SS')"
+        # Create a more robust pattern to match the date ranges
+        # This pattern will be more flexible with spaces and quotes
+        pattern = r"TO_DATE\(['\"](\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})['\"].*?\)[^)]*TO_DATE\(['\"](\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})['\"]"
         
-        updated_query = re.sub(pattern, replacement, query)
+        # Log the original query for debugging
+        logging.info(f"Original query before modification: {query[:100]}...")
+        
+        # Try to find matches
+        matches = re.findall(pattern, query)
+        if not matches:
+            # If the pattern didn't match, try a simpler approach: direct string replacement
+            logging.warning("Could not find date patterns using regex. Trying direct string replacement.")
+            
+            # Get all dates from the query that match the format YYYY-MM-DD HH:MM:SS
+            all_dates = re.findall(r"(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})", query)
+            if len(all_dates) >= 2:
+                # Replace the first and second occurrences
+                query = query.replace(all_dates[0], start_date, 1)
+                query = query.replace(all_dates[1], end_date, 1)
+            else:
+                logging.error(f"Could not find any dates in the query: {query}")
+                return False
+        else:
+            # Use regex substitution - replace each date range
+            # Match TO_DATE('any-date') pattern and replace the date inside
+            query = re.sub(r"TO_DATE\(['\"](\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})['\"]",
+                          lambda m, c=iter([start_date, end_date]): f"TO_DATE('{next(c)}'",
+                          query, count=2)
         
         # Write back the updated query
         with open(query_path, 'w') as f:
-            f.write(updated_query)
-        
-        logging.info(f"Updated query with date range: {start_date} to {end_date}")
-        
-        # Add comments to the query file for better logging
-        with open(query_path, 'r') as f:
-            current_content = f.read()
-            
-        with open(query_path, 'w') as f:
+            # Add comments to the query file for better logging
             comment = f"-- Query updated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by {EXECUTION_USER}\n"
             comment += f"-- Date range: {start_date} to {end_date}\n\n"
-            f.write(comment + current_content)
-            
-        return True
+            f.write(comment + query)
+        
+        # Verify the update was successful
+        with open(query_path, 'r') as f:
+            updated_query = f.read()
+            if start_date in updated_query and end_date in updated_query:
+                logging.info(f"Successfully updated query with date range: {start_date} to {end_date}")
+                # Print a few lines of the updated query for verification
+                first_few_lines = updated_query.split("\n")[:10]
+                logging.info("Updated query (first few lines):")
+                for line in first_few_lines:
+                    logging.info(line)
+                return True
+            else:
+                logging.error("Date range not found in updated query. Update failed.")
+                return False
     except Exception as e:
         logging.error(f"Error updating query file: {str(e)}")
         return False
