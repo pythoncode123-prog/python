@@ -892,9 +892,10 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         baseline = config.get('BASELINE', 1899206)
         
         # Generate the report content with the updated timestamp and user
-        execution_timestamp = datetime.strptime('2025-07-06 16:24:18', '%Y-%m-%d %H:%M:%S')
+        execution_timestamp = datetime.strptime('2025-07-06 16:44:43', '%Y-%m-%d %H:%M:%S')
         execution_user = 'satish537'
         
+        # Note: Removed generate_region_chart and generate_daily_trend_chart from the content
         content = f"""
 <h1>Monthly Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {execution_timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
@@ -903,10 +904,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
 {generate_daily_usage_by_region_chart(df)}
 {generate_baseline_variation_chart(df, baseline)}
 {generate_monthly_task_usage_chart(df)}
-{generate_region_chart(df)}
 {generate_daily_summary_table(df)}
-{generate_daily_trend_chart(df)}
-{generate_peaks_variation_table(df, baseline)}
 <hr />
 <p><em>Note: This report shows the task usage data{' (TEST MODE)' if test_mode else ''}</em></p>
 """
