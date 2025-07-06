@@ -460,12 +460,8 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
         df_monthly = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
         df_monthly = df_monthly.sort_values('DATE')
         
-        # Sample dates to make x-axis less crowded if needed
-        if len(df_monthly) > 15:
-            df_monthly = df_monthly.iloc[::2, :]  # Every 2nd row
-        
-        # Format the dates for x-axis - use MM-DD format
-        df_monthly['Day'] = df_monthly['DATE'].dt.strftime('%m-%d')
+        # Format the dates for x-axis - use DD-MM format as requested
+        df_monthly['Day'] = df_monthly['DATE'].dt.strftime('%d-%m')
         df_monthly['FullDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
         
         # Generate chart rows
@@ -473,11 +469,11 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
         for _, row in df_monthly.iterrows():
             chart_rows.append(f"<tr><td>{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
         
-        # Ensure the colors are all light green and add spacing between bars
+        # Use specific parameters to match the image exactly
         return f"""
-<h3>Overall Monthly Task Usage Report</h3>
+<h3>Overall Monthly Task Usage Report:</h3>
 <ac:structured-macro ac:name="chart">
-    <ac:parameter ac:name="title">Overall Monthly Task Usage Report</ac:parameter>
+    <ac:parameter ac:name="title">Overall Monthly Task Usage Report:</ac:parameter>
     <ac:parameter ac:name="type">bar</ac:parameter>
     <ac:parameter ac:name="orientation">vertical</ac:parameter>
     <ac:parameter ac:name="width">1000</ac:parameter>
@@ -486,17 +482,19 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="legend">false</ac:parameter>
     <ac:parameter ac:name="dataDisplay">true</ac:parameter>
     <ac:parameter ac:name="showValues">true</ac:parameter>
-    <ac:parameter ac:name="valuePosition">bottom</ac:parameter>
+    <ac:parameter ac:name="valuePosition">inside</ac:parameter>
     <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
     <ac:parameter ac:name="stacked">false</ac:parameter>
-    <ac:parameter ac:name="color">#90EE90</ac:parameter>
-    <ac:parameter ac:name="colors">#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90,#90EE90</ac:parameter>
-    <ac:parameter ac:name="seriesColors">#90EE90</ac:parameter>
-    <ac:parameter ac:name="spacing">true</ac:parameter>
+    <ac:parameter ac:name="color">#4F7942</ac:parameter>
+    <ac:parameter ac:name="colors">#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942</ac:parameter>
+    <ac:parameter ac:name="seriesColors">#4F7942</ac:parameter>
+    <ac:parameter ac:name="spacing">false</ac:parameter>
+    <ac:parameter ac:name="barWidth">25</ac:parameter>
+    <ac:parameter ac:name="minValue">0</ac:parameter>
+    <ac:parameter ac:name="maxValue">1200000</ac:parameter>
     <ac:parameter ac:name="xLabel">Date</ac:parameter>
     <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
-    <ac:parameter ac:name="labelAngle">45</ac:parameter>
-    <ac:parameter ac:name="labelSpacing">35</ac:parameter>
+    <ac:parameter ac:name="labelAngle">90</ac:parameter>
     <ac:parameter ac:name="fontSize">12</ac:parameter>
     <ac:parameter ac:name="labelFontSize">12</ac:parameter>
     <ac:rich-text-body>
@@ -900,9 +898,9 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         # Get baseline from config
         baseline = config.get('BASELINE', 1899206)
         
-        # Generate the report content
-        execution_timestamp = datetime.strptime('2025-07-06 01:27:54', '%Y-%m-%d %H:%M:%S')  # Updated timestamp from user
-        execution_user = 'satish537'  # Updated username from user
+        # Generate the report content with the updated timestamp and user
+        execution_timestamp = datetime.strptime('2025-07-06 01:45:46', '%Y-%m-%d %H:%M:%S')
+        execution_user = 'satish537'
         
         content = f"""
 <h1>Monthly Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
