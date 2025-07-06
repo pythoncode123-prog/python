@@ -18,7 +18,7 @@ from lib.secure_config import SecureConfig
 CONFIG_FILE = 'config/config.ini'
 QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
-EXECUTION_TIMESTAMP = datetime.strptime('2025-07-06 21:14:17', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
+EXECUTION_TIMESTAMP = datetime.strptime('2025-07-06 21:36:27', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
 EXECUTION_USER = 'satish537'
 
 def setup_logging():
@@ -52,23 +52,29 @@ def check_password_available():
             pass
     return False
 
-def get_month_date_range():
-    """Get the start and end date of the current month."""
+def get_previous_month_date_range():
+    """Get the start and end date of the previous month."""
     today = datetime.now()
-    start_of_month = datetime(today.year, today.month, 1)
     
-    # Calculate the end of the month
-    if today.month == 12:
-        end_of_month = datetime(today.year + 1, 1, 1) - timedelta(days=1)
+    # Calculate first day of current month
+    first_day_of_current_month = datetime(today.year, today.month, 1)
+    
+    # Calculate last day of previous month (one day before first day of current month)
+    last_day_of_previous_month = first_day_of_current_month - timedelta(days=1)
+    
+    # Calculate first day of previous month
+    if last_day_of_previous_month.month == 12:  # December
+        first_day_of_previous_month = datetime(last_day_of_previous_month.year - 1, 12, 1)
     else:
-        end_of_month = datetime(today.year, today.month + 1, 1) - timedelta(days=1)
+        first_day_of_previous_month = datetime(last_day_of_previous_month.year, last_day_of_previous_month.month, 1)
     
-    start_date_str = start_of_month.strftime('%Y-%m-%d 00:00:00')
-    end_date_str = end_of_month.strftime('%Y-%m-%d 23:59:00')
+    start_date_str = first_day_of_previous_month.strftime('%Y-%m-%d 00:00:00')
+    end_date_str = last_day_of_previous_month.strftime('%Y-%m-%d 23:59:59')
     
     # Get month name for Confluence page
-    month_name = calendar.month_name[today.month]
+    month_name = calendar.month_name[last_day_of_previous_month.month]
     
+    logging.info(f"Previous month date range: {start_date_str} to {end_date_str} ({month_name})")
     return start_date_str, end_date_str, month_name
 
 def get_ytd_date_range():
@@ -77,8 +83,9 @@ def get_ytd_date_range():
     start_of_year = datetime(today.year, 1, 1)
     
     start_date_str = start_of_year.strftime('%Y-%m-%d 00:00:00')
-    today_str = today.strftime('%Y-%m-%d 23:59:00')
+    today_str = today.strftime('%Y-%m-%d 23:59:59')
     
+    logging.info(f"Year-to-date range: {start_date_str} to {today_str}")
     return start_date_str, today_str
 
 def update_query_with_date_range(query_path, start_date, end_date):
@@ -100,40 +107,66 @@ def update_query_with_date_range(query_path, start_date, end_date):
             f.write(updated_query)
         
         logging.info(f"Updated query with date range: {start_date} to {end_date}")
+        
+        # Add comments to the query file for better logging
+        with open(query_path, 'r') as f:
+            current_content = f.read()
+            
+        with open(query_path, 'w') as f:
+            comment = f"-- Query updated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by {EXECUTION_USER}\n"
+            comment += f"-- Date range: {start_date} to {end_date}\n\n"
+            f.write(comment + current_content)
+            
         return True
     except Exception as e:
         logging.error(f"Error updating query file: {str(e)}")
         return False
 
 def update_confluence_page_title(config_path, suffix):
-    """Update the Confluence page title in the config file."""
+    """Update the Confluence page title in the config file to include the suffix."""
     try:
+        # Check if file exists
+        if not os.path.exists(config_path):
+            logging.error(f"Config file not found: {config_path}")
+            return None
+            
         # Read the config file
         with open(config_path, 'r') as f:
-            config_content = f.read()
+            config_content = f.readlines()
         
-        # Look for PAGE_TITLE in the config
-        pattern = r'(PAGE_TITLE\s*=\s*[\'"])(.*?)([\'"])'
+        # Find the PAGE_TITLE line and update it
+        page_title_found = False
+        updated_content = []
         
-        # Check if there's already a suffix
-        match = re.search(pattern, config_content)
-        if match:
-            base_title = match.group(2)
-            # Remove any existing suffix (month name or YTD)
-            base_title = re.sub(r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$', '', base_title)
-            # Add the new suffix
-            new_title = f"{base_title} - {suffix}"
-            updated_config = re.sub(pattern, f"\\1{new_title}\\3", config_content)
-            
-            # Write back the updated config
-            with open(config_path, 'w') as f:
-                f.write(updated_config)
-            
-            logging.info(f"Updated Confluence page title to include suffix: {suffix}")
-            return new_title
-        else:
-            logging.warning(f"Could not find PAGE_TITLE in config file: {config_path}")
+        for line in config_content:
+            if 'PAGE_TITLE' in line and '=' in line:
+                page_title_found = True
+                # Extract the base title (remove existing suffix if present)
+                parts = line.split('=')
+                if len(parts) >= 2:
+                    base_title = parts[1].strip().strip('"\'')
+                    # Remove any existing suffix
+                    base_title = re.sub(r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$', '', base_title)
+                    # Add the new suffix and update the line
+                    new_title = f"{base_title} - {suffix}"
+                    variable_name = parts[0].strip()
+                    updated_line = f"{variable_name} = \"{new_title}\"\n"
+                    updated_content.append(updated_line)
+                    logging.info(f"Updated Confluence page title to: {new_title}")
+                else:
+                    updated_content.append(line)
+            else:
+                updated_content.append(line)
+        
+        if not page_title_found:
+            logging.warning("PAGE_TITLE not found in config file. The Confluence page title will not be updated.")
             return None
+            
+        # Write back the updated config
+        with open(config_path, 'w') as f:
+            f.writelines(updated_content)
+            
+        return True
     except Exception as e:
         logging.error(f"Error updating Confluence page title: {str(e)}")
         return None
@@ -144,7 +177,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run data workflow")
     parser.add_argument("--test", action="store_true", help="Run in test mode using predefined test CSV")
     parser.add_argument("--no-publish", action="store_true", help="Skip actual publishing to Confluence")
-    parser.add_argument("--monthly", action="store_true", help="Use current month date range in SQL query")
+    parser.add_argument("--monthly", action="store_true", help="Use previous month date range in SQL query")
     parser.add_argument("--daily", action="store_true", help="Use year-to-date range in SQL query")
     args = parser.parse_args()
 
@@ -172,14 +205,19 @@ def main():
     
     # Update query and Confluence page title based on flags
     if args.monthly:
-        logging.info("Running with monthly date range flag")
-        start_date, end_date, month_name = get_month_date_range()
+        logging.info("Running with monthly date range flag (for PREVIOUS month)")
+        start_date, end_date, month_name = get_previous_month_date_range()
         if not update_query_with_date_range(QUERY_FILE, start_date, end_date):
-            logging.error("Failed to update query with monthly dates")
+            logging.error("Failed to update query with previous month dates")
             return 1
         
         # Update Confluence page title with month name
-        update_confluence_page_title(CONFIG_FILE, month_name)
+        update_result = update_confluence_page_title(CONFIG_FILE, month_name)
+        if update_result:
+            logging.info(f"Confluence page title updated to include: {month_name}")
+        else:
+            logging.warning("Failed to update Confluence page title. Will continue with existing title.")
+        
         logging.info(f"Query updated to use {month_name} date range by {EXECUTION_USER}")
     
     elif args.daily:
@@ -190,7 +228,12 @@ def main():
             return 1
         
         # Update Confluence page title with YTD
-        update_confluence_page_title(CONFIG_FILE, "YTD")
+        update_result = update_confluence_page_title(CONFIG_FILE, "YTD")
+        if update_result:
+            logging.info("Confluence page title updated to include: YTD")
+        else:
+            logging.warning("Failed to update Confluence page title. Will continue with existing title.")
+            
         logging.info(f"Query updated to use year-to-date range by {EXECUTION_USER}")
 
     # Check for password availability if publishing
