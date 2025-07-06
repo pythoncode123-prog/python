@@ -142,8 +142,9 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
         chart_df['Baseline'] = baseline
         chart_df['Variation'] = baseline - chart_df['TOTAL_JOBS']
         
-        # Format the DATE column for display
-        chart_df['FormattedDate'] = chart_df['DATE'].dt.strftime('%m/%d/%Y')
+        # Format the DATE column for display - use just day number for chart
+        chart_df['FormattedDate'] = chart_df['DATE'].dt.strftime('%d')
+        chart_df['FullDate'] = chart_df['DATE'].dt.strftime('%m/%d/%Y')
         
         # Generate table rows for the data table below the chart (with Variation column)
         table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Total Jobs</th><th>Variation</th></tr>"]
@@ -151,7 +152,7 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
             # Add color coding to variation - green if positive (below baseline), red if negative
             variation_style = 'style="background-color: #90EE90;"' if row['Variation'] > 0 else 'style="background-color: #FFB6C1;"'
             table_rows.append(
-                f"<tr><td>{row['FormattedDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['TOTAL_JOBS'])}</td><td {variation_style}>{int(row['Variation'])}</td></tr>"
+                f"<tr><td>{row['FullDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['TOTAL_JOBS'])}</td><td {variation_style}>{int(row['Variation'])}</td></tr>"
             )
         
         # Create a chart title based on the month
@@ -162,9 +163,9 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
         # Create side-by-side comparison by making separate series for each metric
         chart_table_rows = ["<tr><th>Metric</th>"]
         
-        # Add date headers
+        # Add date headers - use day numbers for simplicity
         for _, row in chart_df.iterrows():
-            chart_table_rows[0] += f"<th>{row['FormattedDate']}</th>"
+            chart_table_rows[0] += f"<th>Day {row['FormattedDate']}</th>"
         chart_table_rows[0] += "</tr>"
         
         # Add Baseline row
@@ -196,8 +197,9 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
     <ac:parameter ac:name="valuePosition">inside</ac:parameter>
     <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
     <ac:parameter ac:name="color">green</ac:parameter>
-    <ac:parameter ac:name="labelPosition">diagonal</ac:parameter>
-    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="labelAngle">45</ac:parameter>
+    <ac:parameter ac:name="labelSpacing">50</ac:parameter>
+    <ac:parameter ac:name="xLabel">Date (Day)</ac:parameter>
     <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
     <ac:rich-text-body>
         <table>
@@ -285,52 +287,70 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
         # Sort by date to ensure proper timeline
         df_sorted = df.sort_values('DATE')
         
-        # Get unique regions and dates
+        # Get unique regions and dates - consider sampling to reduce x-axis crowding
         regions = sorted(df_sorted['REGION'].unique())
         dates = sorted(df_sorted['DATE'].unique())
         
-        # Format dates for display - make more compact to fit in diagonal labels
-        formatted_dates = [pd.to_datetime(date).strftime('%m/%d') for date in dates]
+        # Sample dates to make x-axis less crowded (every 3rd date)
+        if len(dates) > 10:
+            sampled_dates = dates[::3]  # Every 3rd date
+        else:
+            sampled_dates = dates
+        
+        # Format dates for display - use just day numbers for chart
+        formatted_dates = [pd.to_datetime(date).strftime('%d') for date in sampled_dates]
         
         # TRANSPOSE THE DATA STRUCTURE
         # Since Confluence is reading it backwards, let's build it the opposite way
         # Put regions as rows (first column) and dates as columns
         
-        # Create header with Region first, then dates
+        # Create header with Region first, then dates (using very short date format)
         chart_table_rows = ["<tr><th>Region</th>"]
         for date_str in formatted_dates:
-            chart_table_rows[0] += f"<th>{date_str}</th>"
+            chart_table_rows[0] += f"<th>D{date_str}</th>"  # Prefix with D for "day"
         chart_table_rows[0] += "</tr>"
         
         # Add data rows - each row is a region with values for each date
         for region in regions:
             data_row = f"<tr><td>{region}</td>"
-            for date in dates:
+            for date in sampled_dates:
                 region_date_data = df_sorted[(df_sorted['REGION'] == region) & (df_sorted['DATE'] == date)]
                 value = int(region_date_data['TOTAL_JOBS'].sum()) if not region_date_data.empty else 0
                 data_row += f"<td>{value}</td>"
             data_row += "</tr>"
             chart_table_rows.append(data_row)
         
+        # Create a legend explaining day numbers
+        day_legend = "<p><strong>Day Legend:</strong> "
+        for i, date in enumerate(sampled_dates):
+            day_str = pd.to_datetime(date).strftime('%d')
+            full_date = pd.to_datetime(date).strftime('%m/%d/%Y')
+            day_legend += f"D{day_str}={full_date}"
+            if i < len(sampled_dates) - 1:
+                day_legend += ", "
+        day_legend += "</p>"
+        
         return f"""
 <h3>Daily Task Usage Report by Region</h3>
+{day_legend}
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">Daily Task Usage Report</ac:parameter>
     <ac:parameter ac:name="type">line</ac:parameter>
-    <ac:parameter ac:name="width">800</ac:parameter>
+    <ac:parameter ac:name="width">1000</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:parameter ac:name="dataDisplay">false</ac:parameter>
-    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="xLabel">Day</ac:parameter>
     <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
     <ac:parameter ac:name="color">green</ac:parameter>
     <ac:parameter ac:name="showShapes">true</ac:parameter>
     <ac:parameter ac:name="opacity">80</ac:parameter>
-    <ac:parameter ac:name="labelPosition">diagonal</ac:parameter>
-    <ac:parameter ac:name="timeSeries">false</ac:parameter>
-    <ac:parameter ac:name="forceAxisZero">false</ac:parameter>
+    <ac:parameter ac:name="labelAngle">45</ac:parameter>
+    <ac:parameter ac:name="labelSpacing">20</ac:parameter>
     <ac:parameter ac:name="lineStyle">solid</ac:parameter>
     <ac:parameter ac:name="fontColor">black</ac:parameter>
+    <ac:parameter ac:name="fontSize">12</ac:parameter>
+    <ac:parameter ac:name="labelFontSize">12</ac:parameter>
     <ac:parameter ac:name="backgroundColor">white</ac:parameter>
     <ac:rich-text-body>
         <table>
@@ -363,19 +383,24 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
         df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
         df_summary = df_summary.sort_values('DATE')
         
-        # Format dates - make more compact to fit in diagonal labels
-        df_summary['Date'] = df_summary['DATE'].dt.strftime('%m/%d')
-        dates = df_summary['Date'].tolist()
+        # Sample dates to make x-axis less crowded (every 3rd date)
+        if len(df_summary) > 10:
+            df_summary = df_summary.iloc[::3, :]  # Every 3rd row
+        
+        # Format dates - use day numbers only for chart
+        df_summary['Day'] = df_summary['DATE'].dt.strftime('%d')
+        df_summary['FullDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
+        days = df_summary['Day'].tolist()
         
         # Create baseline, peaks, max range data
-        baseline_values = [baseline] * len(dates)
+        baseline_values = [baseline] * len(days)
         peaks_values = df_summary['TOTAL_JOBS'].tolist()
-        max_range_values = [2000000] * len(dates)
+        max_range_values = [2000000] * len(days)
         
         # TRANSPOSE: Metrics as rows, dates as columns
         chart_table_rows = ["<tr><th>Metric</th>"]
-        for date_str in dates:
-            chart_table_rows[0] += f"<th>{date_str}</th>"
+        for day_str in days:
+            chart_table_rows[0] += f"<th>D{day_str}</th>"
         chart_table_rows[0] += "</tr>"
         
         # Add Baseline row
@@ -399,20 +424,31 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
         max_row += "</tr>"
         chart_table_rows.append(max_row)
         
+        # Create a legend explaining day numbers
+        day_legend = "<p><strong>Day Legend:</strong> "
+        for i, row in df_summary.iterrows():
+            day_legend += f"D{row['Day']}={row['FullDate']}"
+            if i < len(df_summary) - 1:
+                day_legend += ", "
+        day_legend += "</p>"
+        
         return f"""
 <h3>Variation with Baseline Data</h3>
+{day_legend}
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">Variation with Baseline Data</ac:parameter>
     <ac:parameter ac:name="type">area</ac:parameter>
-    <ac:parameter ac:name="width">800</ac:parameter>
+    <ac:parameter ac:name="width">1000</ac:parameter>
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:parameter ac:name="dataDisplay">false</ac:parameter>
-    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="xLabel">Day</ac:parameter>
     <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
     <ac:parameter ac:name="color">green</ac:parameter>
-    <ac:parameter ac:name="labelPosition">diagonal</ac:parameter>
-    <ac:parameter ac:name="timeSeries">false</ac:parameter>
+    <ac:parameter ac:name="labelAngle">45</ac:parameter>
+    <ac:parameter ac:name="labelSpacing">20</ac:parameter>
+    <ac:parameter ac:name="fontSize">12</ac:parameter>
+    <ac:parameter ac:name="labelFontSize">12</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -444,22 +480,36 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
         df_monthly = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
         df_monthly = df_monthly.sort_values('DATE')
         
-        # Format the dates for x-axis - make more compact to fit in diagonal labels
-        df_monthly['FormattedDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
+        # Sample dates to make x-axis less crowded if needed
+        if len(df_monthly) > 15:
+            df_monthly = df_monthly.iloc[::2, :]  # Every 2nd row
+        
+        # Format the dates for x-axis - use day numbers only for chart
+        df_monthly['Day'] = df_monthly['DATE'].dt.strftime('%d')
+        df_monthly['FullDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
         
         # Generate chart rows
         chart_rows = []
         for _, row in df_monthly.iterrows():
-            chart_rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+            chart_rows.append(f"<tr><td>D{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+        
+        # Create a legend explaining day numbers
+        day_legend = "<p><strong>Day Legend:</strong> "
+        for i, row in df_monthly.iterrows():
+            day_legend += f"D{row['Day']}={row['FullDate']}"
+            if i < len(df_monthly) - 1:
+                day_legend += ", "
+        day_legend += "</p>"
         
         # Ensure the colors are all green by setting both colors and series colors
         return f"""
 <h3>Overall Monthly Task Usage Report</h3>
+{day_legend}
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">Overall Monthly Task Usage Report</ac:parameter>
     <ac:parameter ac:name="type">bar</ac:parameter>
     <ac:parameter ac:name="orientation">vertical</ac:parameter>
-    <ac:parameter ac:name="width">900</ac:parameter>
+    <ac:parameter ac:name="width">1000</ac:parameter>
     <ac:parameter ac:name="height">500</ac:parameter>
     <ac:parameter ac:name="3D">true</ac:parameter>
     <ac:parameter ac:name="legend">false</ac:parameter>
@@ -469,16 +519,19 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
     <ac:parameter ac:name="stacked">false</ac:parameter>
     <ac:parameter ac:name="color">green</ac:parameter>
-    <ac:parameter ac:name="colors">#008000,#008000,#008000,#008000,#008000,#008000,#008000</ac:parameter>
+    <ac:parameter ac:name="colors">#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000,#008000</ac:parameter>
     <ac:parameter ac:name="seriesColors">green</ac:parameter>
-    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="xLabel">Day</ac:parameter>
     <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
-    <ac:parameter ac:name="labelPosition">diagonal</ac:parameter>
+    <ac:parameter ac:name="labelAngle">45</ac:parameter>
+    <ac:parameter ac:name="labelSpacing">35</ac:parameter>
+    <ac:parameter ac:name="fontSize">12</ac:parameter>
+    <ac:parameter ac:name="labelFontSize">12</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
                 <tr>
-                    <th>Date</th>
+                    <th>Day</th>
                     <th>Total Jobs</th>
                 </tr>
                 {chr(10).join(chart_rows)}
@@ -523,31 +576,52 @@ def generate_daily_trend_chart(df: pd.DataFrame) -> str:
         df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
         
         df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
-        df_summary['FormattedDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
+        df_summary = df_summary.sort_values('DATE')
+        
+        # Sample dates to make x-axis less crowded if needed
+        if len(df_summary) > 15:
+            df_summary = df_summary.iloc[::2, :]  # Every 2nd row
+        
+        # Format date - use day numbers only for chart
+        df_summary['Day'] = df_summary['DATE'].dt.strftime('%d')
+        df_summary['FullDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
         
         # Generate chart rows
         chart_rows = []
         for _, row in df_summary.iterrows():
-            chart_rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+            chart_rows.append(f"<tr><td>D{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+        
+        # Create a legend explaining day numbers
+        day_legend = "<p><strong>Day Legend:</strong> "
+        for i, row in df_summary.iterrows():
+            day_legend += f"D{row['Day']}={row['FullDate']}"
+            if i < len(df_summary) - 1:
+                day_legend += ", "
+        day_legend += "</p>"
         
         # Use area chart instead of line (better supported)
         return f"""
+<h3>Daily Job Volumes Trend</h3>
+{day_legend}
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">Daily Job Volumes Trend</ac:parameter>
     <ac:parameter ac:name="type">area</ac:parameter>
     <ac:parameter ac:name="orientation">vertical</ac:parameter>
-    <ac:parameter ac:name="width">600</ac:parameter>
-    <ac:parameter ac:name="height">300</ac:parameter>
+    <ac:parameter ac:name="width">1000</ac:parameter>
+    <ac:parameter ac:name="height">400</ac:parameter>
     <ac:parameter ac:name="dataDisplay">true</ac:parameter>
     <ac:parameter ac:name="color">green</ac:parameter>
-    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="xLabel">Day</ac:parameter>
     <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
-    <ac:parameter ac:name="labelPosition">diagonal</ac:parameter>
+    <ac:parameter ac:name="labelAngle">45</ac:parameter>
+    <ac:parameter ac:name="labelSpacing">20</ac:parameter>
+    <ac:parameter ac:name="fontSize">12</ac:parameter>
+    <ac:parameter ac:name="labelFontSize">12</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
                 <tr>
-                    <th>Date</th>
+                    <th>Day</th>
                     <th>Total Jobs</th>
                 </tr>
                 {chr(10).join(chart_rows)}
@@ -563,7 +637,7 @@ def generate_daily_trend_chart(df: pd.DataFrame) -> str:
             <th>Date</th>
             <th>Total Jobs</th>
         </tr>
-        {"".join(chart_rows)}
+        {"".join([f"<tr><td>{row['FullDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>" for _, row in df_summary.iterrows()])}
     </tbody>
 </table>
 """
@@ -864,7 +938,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         baseline = config.get('BASELINE', 1899206)
         
         # Generate the report content
-        execution_timestamp = datetime.strptime('2025-07-06 00:47:56', '%Y-%m-%d %H:%M:%S')  # Updated timestamp from user
+        execution_timestamp = datetime.strptime('2025-07-06 00:54:09', '%Y-%m-%d %H:%M:%S')  # Updated timestamp from user
         execution_user = 'satish537'  # Updated username from user
         
         content = f"""
@@ -908,6 +982,6 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
                 return False
                 
     except Exception as e:
-        logging.error(f"Error in Confluence publishing: {str(e)}")
-        print(f"Error publishing to Confluence: {str(e)}")
+        logging."error(f"Error in Confluence publishing: {str(e)}")
+        print(fError publishing to Confluence: {str(e)}")
         return False 
