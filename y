@@ -13,14 +13,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from src.workflow import run_workflow
 from lib.secure_config import SecureConfig
-from src.publish_confluence import publish_to_confluence  # Import the new function
 
 # Configuration
 CONFIG_FILE = 'config/config.ini'
 QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
-EXECUTION_TIMESTAMP = datetime.strptime('2025-07-06 23:06:46', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
-EXECUTION_USER = 'satish537'
+EXECUTION_TIMESTAMP = datetime.strptime('2025-07-06 23:55:49', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
+EXECUTION_USER = 'satish537@v10'
 
 def setup_logging():
     """Set up logging configuration."""
@@ -89,13 +88,13 @@ def get_ytd_date_range():
 def update_query_with_date_range(query_path, start_date, end_date):
     """Update the query.sql file with specified date range."""
     try:
-        # Create a new SQL query with proper date range (without country field)
+        # Create a new SQL query with proper date range (COUNTRY/REGION removed)
         new_query = f"""-- Query updated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by {EXECUTION_USER}
 -- Date range: {start_date} to {end_date}
 
 SELECT 
     net_report.net_date as DATE,
-    net_report.ctm_host_name as REGION,
+    net_report.ctm_host_name as HOST_NAME,
     net_report_data.fvalue as ENV,
     net_report_data.jobs as TOTAL_JOBS
 FROM 
@@ -124,6 +123,7 @@ ORDER BY
             f.write(new_query)
             
         logging.info(f"Successfully created new query with date range: {start_date} to {end_date}")
+        logging.info("COUNTRY/REGION field removed from query")
         
         return True
     except Exception as e:
@@ -138,46 +138,38 @@ def update_confluence_page_title(config_path, suffix):
             logging.error(f"Config file not found: {config_path}")
             return None
             
-        # Read the config file
+        # Read the config file content
         with open(config_path, 'r') as f:
-            config_content = f.readlines()
+            config_content = f.read()
         
-        # Find the PAGE_TITLE line and update it
-        page_title_found = False
-        updated_content = []
+        # Look for the PAGE_TITLE line
+        page_title_pattern = r'(PAGE_TITLE\s*=\s*[\'"])(.*?)([\'"])'
         
-        for line in config_content:
-            if 'PAGE_TITLE' in line and '=' in line:
-                page_title_found = True
-                # Extract the base title (remove existing suffix if present)
-                parts = line.split('=')
-                if len(parts) >= 2:
-                    base_title = parts[1].strip().strip('"\'')
-                    # Remove any existing suffix
-                    base_title = re.sub(r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$', '', base_title)
-                    # Add the new suffix and update the line
-                    new_title = f"{base_title} - {suffix}"
-                    variable_name = parts[0].strip()
-                    updated_line = f"{variable_name} = \"{new_title}\"\n"
-                    updated_content.append(updated_line)
-                    logging.info(f"Updated Confluence page title to: {new_title}")
-                else:
-                    updated_content.append(line)
-            else:
-                updated_content.append(line)
-        
-        if not page_title_found:
-            logging.warning("PAGE_TITLE not found in config file. The Confluence page title will not be updated.")
-            return None
+        # If found, update it
+        if re.search(page_title_pattern, config_content):
+            # Extract the base title (remove any existing suffix)
+            base_title = re.search(page_title_pattern, config_content).group(2)
+            base_title = re.sub(r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$', '', base_title)
             
-        # Write back the updated config
-        with open(config_path, 'w') as f:
-            f.writelines(updated_content)
+            # Create the new title with suffix
+            new_title = f"{base_title} - {suffix}"
             
-        return True
+            # Replace the old title with the new one
+            updated_content = re.sub(page_title_pattern, r'\1' + new_title + r'\3', config_content)
+            
+            # Write the updated content back to the file
+            with open(config_path, 'w') as f:
+                f.write(updated_content)
+            
+            logging.info(f"Successfully updated Confluence page title to: {new_title}")
+            return True
+        else:
+            logging.warning(f"PAGE_TITLE pattern not found in {config_path}")
+            return False
+            
     except Exception as e:
         logging.error(f"Error updating Confluence page title: {str(e)}")
-        return None
+        return False
 
 def main():
     """Main entry point."""
@@ -216,17 +208,16 @@ def main():
         logging.info("Running with monthly date range flag (for PREVIOUS month)")
         start_date, end_date, month_name = get_previous_month_date_range()
         
-        # Update SQL query with date range (without country field)
+        # Update SQL query with date range
         if not update_query_with_date_range(QUERY_FILE, start_date, end_date):
             logging.error("Failed to update query with previous month dates")
             return 1
             
         # Update Confluence page title with month name
-        update_result = update_confluence_page_title(CONFIG_FILE, month_name)
-        if update_result:
-            logging.info(f"Confluence page title updated to include: {month_name}")
-        else:
+        if not update_confluence_page_title(CONFIG_FILE, month_name):
             logging.warning("Failed to update Confluence page title. Will continue with existing title.")
+        else:
+            logging.info(f"Confluence page title updated to include: {month_name}")
         
         logging.info(f"Query updated to use {month_name} date range by {EXECUTION_USER}")
     
@@ -234,17 +225,16 @@ def main():
         logging.info("Running with year-to-date range flag")
         start_date, end_date = get_ytd_date_range()
         
-        # Update SQL query with date range (without country field)
+        # Update SQL query with date range
         if not update_query_with_date_range(QUERY_FILE, start_date, end_date):
             logging.error("Failed to update query with year-to-date range")
             return 1
             
         # Update Confluence page title with YTD
-        update_result = update_confluence_page_title(CONFIG_FILE, "YTD")
-        if update_result:
-            logging.info("Confluence page title updated to include: YTD")
-        else:
+        if not update_confluence_page_title(CONFIG_FILE, "YTD"):
             logging.warning("Failed to update Confluence page title. Will continue with existing title.")
+        else:
+            logging.info("Confluence page title updated to include: YTD")
             
         logging.info(f"Query updated to use year-to-date range by {EXECUTION_USER}")
 
@@ -257,32 +247,16 @@ def main():
         print("3. Use --no-publish flag to skip publishing")
         return 1
 
-    # Run the workflow to export data to CSV
-    workflow_result = run_workflow(
+    # Run the workflow
+    run_workflow(
         CONFIG_FILE,
         QUERY_FILE,
         OUTPUT_CSV,
         EXECUTION_TIMESTAMP,
         EXECUTION_USER,
         test_mode=args.test,
-        publish_test=False  # Skip the default publishing mechanism
+        publish_test=not args.no_publish  # Whether to publish in test mode
     )
-    
-    # If workflow completed and publishing is enabled, use our custom publish function
-    if workflow_result and not args.no_publish and os.path.exists(OUTPUT_CSV):
-        logging.info("Publishing data to Confluence with embedded task usage graph...")
-        publish_result = publish_to_confluence(
-            OUTPUT_CSV,
-            CONFIG_FILE,
-            EXECUTION_TIMESTAMP,
-            EXECUTION_USER
-        )
-        
-        if publish_result:
-            logging.info("Successfully published data with graph to Confluence")
-        else:
-            logging.error("Failed to publish data to Confluence")
-            return 1
     
     return 0
 
