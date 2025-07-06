@@ -464,43 +464,27 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
         df_monthly['Day'] = df_monthly['DATE'].dt.strftime('%d-%m')
         df_monthly['FullDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
         
-        # Instead of using a single series, create multiple series (one for each date)
-        # This is a workaround to force spacing between bars
-        
-        # Generate table rows - TRANSPOSE the data structure
-        # Put dates as rows and create a column for each bar
-        
-        # First, create the header row with column names
-        header_row = "<tr><th>Date</th>"
-        for i in range(len(df_monthly)):
-            header_row += f"<th>Day{i+1}</th>"
-        header_row += "</tr>"
-        
-        # Now create a row for each date
+        # Generate a simpler structure that will display properly in Confluence
+        # The key is to have only one row with dates and one row with values
         chart_rows = []
-        for i, row in df_monthly.iterrows():
-            date_row = f"<tr><td>{row['Day']}</td>"
-            # For each date, create a column with zeros except for its own column
-            for j in range(len(df_monthly)):
-                if i == j:  # This is the current date's column
-                    date_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
-                else:
-                    date_row += "<td>0</td>"  # Zero for all other columns
-            date_row += "</tr>"
-            chart_rows.append(date_row)
-            
-        # Create legend row to explain date mapping
-        legend = "<p><strong>X-Axis Legend:</strong> "
-        for i, row in df_monthly.iterrows():
-            legend += f"Day{i+1}={row['Day']}"
-            if i < len(df_monthly) - 1:
-                legend += ", "
-        legend += "</p>"
         
-        # Use specific parameters for the chart
+        # Add header row with dates
+        date_header = "<tr>"
+        for _, row in df_monthly.iterrows():
+            date_header += f"<th>{row['Day']}</th>"
+        date_header += "</tr>"
+        chart_rows.append(date_header)
+        
+        # Add data row with total jobs
+        job_row = "<tr>"
+        for _, row in df_monthly.iterrows():
+            job_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+        job_row += "</tr>"
+        chart_rows.append(job_row)
+        
+        # Use specific parameters to match the image exactly
         return f"""
 <h3>Overall Monthly Task Usage Report:</h3>
-{legend}
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">Overall Monthly Task Usage Report:</ac:parameter>
     <ac:parameter ac:name="type">bar</ac:parameter>
@@ -515,30 +499,22 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
     <ac:parameter ac:name="stacked">false</ac:parameter>
     <ac:parameter ac:name="color">#4F7942</ac:parameter>
-    <ac:parameter ac:name="seriesPlacement">grouped</ac:parameter>
+    <ac:parameter ac:name="colors">#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942</ac:parameter>
+    <ac:parameter ac:name="seriesColors">#4F7942</ac:parameter>
+    <ac:parameter ac:name="barWidth">20</ac:parameter>
+    <ac:parameter ac:name="barSpacing">5</ac:parameter>
     <ac:parameter ac:name="xLabel">Date</ac:parameter>
     <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
-    <ac:parameter ac:name="fontSize">12</ac:parameter>
+    <ac:parameter ac:name="labelAngle">45</ac:parameter>
+    <ac:parameter ac:name="labelFontSize">12</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
-                {header_row}
                 {"".join(chart_rows)}
             </tbody>
         </table>
     </ac:rich-text-body>
 </ac:structured-macro>
-
-<h4>Monthly Data:</h4>
-<table class="wrapped">
-    <tbody>
-        <tr>
-            <th>Date</th>
-            <th>Total Jobs</th>
-        </tr>
-        {"".join([f"<tr><td>{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>" for _, row in df_monthly.iterrows()])}
-    </tbody>
-</table>
 """
     except Exception as e:
         logging.error(f"Error generating monthly task usage chart: {str(e)}")
@@ -929,7 +905,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         baseline = config.get('BASELINE', 1899206)
         
         # Generate the report content with the updated timestamp and user
-        execution_timestamp = datetime.strptime('2025-07-06 14:50:31', '%Y-%m-%d %H:%M:%S')
+        execution_timestamp = datetime.strptime('2025-07-06 15:01:37', '%Y-%m-%d %H:%M:%S')
         execution_user = 'satish537'
         
         content = f"""
