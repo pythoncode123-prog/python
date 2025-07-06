@@ -1,4 +1,3 @@
-import requests
 from requests.auth import HTTPBasicAuth
 import pandas as pd
 import json
@@ -7,6 +6,7 @@ import os
 import csv
 from datetime import datetime
 import logging
+import requests
 from typing import Tuple, Optional, Dict, List
 
 # Disable insecure connection warnings for Confluence API
@@ -436,8 +436,8 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
         logging.error(f"Error generating baseline variation chart: {str(e)}")
         return f"<p>Error generating baseline variation chart: {str(e)}</p>"
 
-def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
-    """Generate the overall monthly task usage chart with dates on x-axis."""
+def generate_monthly_task_usage_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
+    """Generate the overall monthly task usage chart matching the image."""
     try:
         # Ensure TOTAL_JOBS is numeric
         df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
@@ -449,59 +449,63 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
         # Format dates for display in MM-DD format for better readability
         df_monthly['Day'] = df_monthly['DATE'].dt.strftime('%m-%d')
         
-        # Generate chart rows
-        chart_rows = []
+        # Add the constant baseline value for all dates
+        baseline_df = df_monthly.copy()
+        baseline_df['Series'] = 'Baseline'
+        baseline_df['Value'] = baseline
+        
+        # Prepare the data for TOTAL_JOBS
+        jobs_df = df_monthly.copy()
+        jobs_df['Series'] = 'Sum of TOTAL_JOBS'
+        jobs_df['Value'] = jobs_df['TOTAL_JOBS']
+        
+        # Create data for the chart in the required format for Confluence
+        # Header row with Series and then all dates
+        header_row = "<tr><th>Series</th>"
         for _, row in df_monthly.iterrows():
-            chart_rows.append(f"<tr><td>{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+            header_row += f"<th>{row['Day']}</th>"
+        header_row += "</tr>"
+        
+        # Baseline row (constant value)
+        baseline_row = "<tr><td>Baseline</td>"
+        for _ in range(len(df_monthly)):
+            baseline_row += f"<td>{baseline}</td>"
+        baseline_row += "</tr>"
+        
+        # TOTAL_JOBS row (actual data)
+        jobs_row = "<tr><td>Sum of TOTAL_JOBS</td>"
+        for _, row in df_monthly.iterrows():
+            jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+        jobs_row += "</tr>"
         
         return f"""
-<h3>Overall Monthly Task Usage Report:</h3>
+<h2>Overall Monthly Task Usage Report</h2>
 <ac:structured-macro ac:name="chart">
-    <ac:parameter ac:name="title">Overall Monthly Task Usage Report:</ac:parameter>
-    <ac:parameter ac:name="type">bar</ac:parameter>
-    <ac:parameter ac:name="orientation">vertical</ac:parameter>
+    <ac:parameter ac:name="title">Monthly Task Usage Report</ac:parameter>
+    <ac:parameter ac:name="type">line</ac:parameter>
     <ac:parameter ac:name="width">1200</ac:parameter>
-    <ac:parameter ac:name="height">500</ac:parameter>
-    <ac:parameter ac:name="3D">true</ac:parameter>
-    <ac:parameter ac:name="legend">false</ac:parameter>
-    <ac:parameter ac:name="dataDisplay">true</ac:parameter>
-    <ac:parameter ac:name="showValues">true</ac:parameter>
-    <ac:parameter ac:name="valuePosition">inside</ac:parameter>
-    <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
+    <ac:parameter ac:name="height">600</ac:parameter>
+    <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">false</ac:parameter>
     <ac:parameter ac:name="stacked">false</ac:parameter>
-    <ac:parameter ac:name="color">#6B8E23</ac:parameter>
-    <ac:parameter ac:name="colors">#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23</ac:parameter>
-    <ac:parameter ac:name="seriesColors">#6B8E23</ac:parameter>
-    <ac:parameter ac:name="barWidth">15</ac:parameter>
-    <ac:parameter ac:name="barSpacing">15</ac:parameter>
-    <ac:parameter ac:name="spacing">true</ac:parameter>
+    <ac:parameter ac:name="opacity">70</ac:parameter>
+    <ac:parameter ac:name="showShapes">true</ac:parameter>
     <ac:parameter ac:name="xLabel">Date</ac:parameter>
-    <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
-    <ac:parameter ac:name="labelAngle">90</ac:parameter>
-    <ac:parameter ac:name="fontColor">black</ac:parameter>
-    <ac:parameter ac:name="valueColor">black</ac:parameter>
+    <ac:parameter ac:name="yLabel">Task Count</ac:parameter>
+    <ac:parameter ac:name="colors">#6B8E23,#B22222</ac:parameter>
+    <ac:parameter ac:name="seriesColors">#6B8E23,#B22222</ac:parameter>
+    <ac:parameter ac:name="thickness">2</ac:parameter>
+    <ac:parameter ac:name="labelAngle">45</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
-                <tr>
-                    <th>Date</th>
-                    <th>Total Jobs</th>
-                </tr>
-                {chr(10).join(chart_rows)}
+                {header_row}
+                {baseline_row}
+                {jobs_row}
             </tbody>
         </table>
     </ac:rich-text-body>
 </ac:structured-macro>
-
-<table class="wrapped">
-    <tbody>
-        <tr>
-            <th>Date</th>
-            <th>Total Jobs</th>
-        </tr>
-        {"".join([f"<tr><td>{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>" for _, row in df_monthly.iterrows()])}
-    </tbody>
-</table>
 """
     except Exception as e:
         logging.error(f"Error generating monthly task usage chart: {str(e)}")
@@ -892,18 +896,20 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         baseline = config.get('BASELINE', 1899206)
         
         # Generate the report content with the updated timestamp and user
-        execution_timestamp = datetime.strptime('2025-07-06 16:44:43', '%Y-%m-%d %H:%M:%S')
+        execution_timestamp = datetime.strptime('2025-07-06 23:14:31', '%Y-%m-%d %H:%M:%S')
         execution_user = 'satish537'
         
-        # Note: Removed generate_region_chart and generate_daily_trend_chart from the content
+        # Make the Monthly Task Usage chart the first chart after the header
         content = f"""
 <h1>Monthly Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {execution_timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
 <p><strong>Generated by:</strong> {execution_user}</p>
+
+{generate_monthly_task_usage_chart(df, baseline)}
+
 {generate_table_and_chart(df, baseline)}
 {generate_daily_usage_by_region_chart(df)}
 {generate_baseline_variation_chart(df, baseline)}
-{generate_monthly_task_usage_chart(df)}
 {generate_daily_summary_table(df)}
 <hr />
 <p><em>Note: This report shows the task usage data{' (TEST MODE)' if test_mode else ''}</em></p>
@@ -937,3 +943,25 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         logging.error(f"Error in Confluence publishing: {str(e)}")
         print(f"Error publishing to Confluence: {str(e)}")
         return False
+
+# Main execution if run directly
+if __name__ == "__main__":
+    # Setup basic logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler("confluence_publish.log"),
+            logging.StreamHandler()
+        ]
+    )
+    
+    import argparse
+    parser = argparse.ArgumentParser(description="Publish data to Confluence")
+    parser.add_argument("--file", default="data.csv", help="CSV file to publish")
+    parser.add_argument("--test", action="store_true", help="Run in test mode")
+    parser.add_argument("--dry-run", action="store_true", help="Simulate without actual upload")
+    args = parser.parse_args()
+    
+    result = publish_to_confluence(args.file, args.test, args.dry_run)
+    sys.exit(0 if result else 1)
