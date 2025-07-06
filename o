@@ -195,6 +195,7 @@ def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
     <ac:parameter ac:name="showValues">true</ac:parameter>
     <ac:parameter ac:name="valuePosition">inside</ac:parameter>
     <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
+    <ac:parameter ac:name="color">green</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -240,6 +241,7 @@ def generate_region_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="width">400</ac:parameter>
     <ac:parameter ac:name="height">300</ac:parameter>
     <ac:parameter ac:name="dataDisplay">true</ac:parameter>
+    <ac:parameter ac:name="color">green</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -284,7 +286,7 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
         regions = sorted(df_sorted['REGION'].unique())
         dates = sorted(df_sorted['DATE'].unique())
         
-        # Format dates for display
+        # Format dates for display - use a clearer format that will show on x-axis
         formatted_dates = [pd.to_datetime(date).strftime('%m/%d') for date in dates]
         
         # TRANSPOSE THE DATA STRUCTURE
@@ -316,6 +318,14 @@ def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:parameter ac:name="dataDisplay">false</ac:parameter>
+    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
+    <ac:parameter ac:name="color">green</ac:parameter>
+    <ac:parameter ac:name="showShapes">true</ac:parameter>
+    <ac:parameter ac:name="opacity">80</ac:parameter>
+    <ac:parameter ac:name="labelPosition">horizontal</ac:parameter>
+    <ac:parameter ac:name="timeSeries">false</ac:parameter>
+    <ac:parameter ac:name="forceAxisZero">false</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -392,6 +402,11 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
     <ac:parameter ac:name="height">400</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:parameter ac:name="dataDisplay">false</ac:parameter>
+    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
+    <ac:parameter ac:name="color">green</ac:parameter>
+    <ac:parameter ac:name="labelPosition">horizontal</ac:parameter>
+    <ac:parameter ac:name="timeSeries">false</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -423,7 +438,7 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
         df_monthly = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
         df_monthly = df_monthly.sort_values('DATE')
         
-        # Format the dates for x-axis
+        # Format the dates for x-axis - use a clearer format that will show on x-axis
         df_monthly['FormattedDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
         
         # Generate chart rows
@@ -447,6 +462,9 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
     <ac:parameter ac:name="stacked">false</ac:parameter>
     <ac:parameter ac:name="color">green</ac:parameter>
+    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
+    <ac:parameter ac:name="labelPosition">horizontal</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -512,6 +530,10 @@ def generate_daily_trend_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="width">600</ac:parameter>
     <ac:parameter ac:name="height">300</ac:parameter>
     <ac:parameter ac:name="dataDisplay">true</ac:parameter>
+    <ac:parameter ac:name="color">green</ac:parameter>
+    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
+    <ac:parameter ac:name="labelPosition">horizontal</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -833,8 +855,8 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         baseline = config.get('BASELINE', 1899206)
         
         # Generate the report content
-        execution_timestamp = datetime.strptime('2025-07-06 00:25:03', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
-        execution_user = 'satish537'  # Updated username
+        execution_timestamp = datetime.strptime('2025-07-06 00:37:33', '%Y-%m-%d %H:%M:%S')  # Updated timestamp from user
+        execution_user = 'satish537'  # Updated username from user
         
         content = f"""
 <h1>Monthly Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
