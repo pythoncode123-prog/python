@@ -18,7 +18,7 @@ from lib.secure_config import SecureConfig
 CONFIG_FILE = 'config/config.ini'
 QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
-EXECUTION_TIMESTAMP = datetime.strptime('2025-07-06 21:43:43', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
+EXECUTION_TIMESTAMP = datetime.strptime('2025-07-06 22:36:10', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
 EXECUTION_USER = 'satish537'
 
 def setup_logging():
@@ -63,10 +63,7 @@ def get_previous_month_date_range():
     last_day_of_previous_month = first_day_of_current_month - timedelta(days=1)
     
     # Calculate first day of previous month
-    if last_day_of_previous_month.month == 12:  # December
-        first_day_of_previous_month = datetime(last_day_of_previous_month.year - 1, 12, 1)
-    else:
-        first_day_of_previous_month = datetime(last_day_of_previous_month.year, last_day_of_previous_month.month, 1)
+    first_day_of_previous_month = datetime(last_day_of_previous_month.year, last_day_of_previous_month.month, 1)
     
     start_date_str = first_day_of_previous_month.strftime('%Y-%m-%d 00:00:00')
     end_date_str = last_day_of_previous_month.strftime('%Y-%m-%d 23:59:59')
@@ -89,62 +86,47 @@ def get_ytd_date_range():
     return start_date_str, today_str
 
 def update_query_with_date_range(query_path, start_date, end_date):
-    """Update the query.sql file with specified date range."""
+    """Update the query.sql file with specified date range and ensure country field is included."""
     try:
-        # Read the existing query
-        with open(query_path, 'r') as f:
-            query = f.read()
-        
-        # Create a more robust pattern to match the date ranges
-        # This pattern will be more flexible with spaces and quotes
-        pattern = r"TO_DATE\(['\"](\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})['\"].*?\)[^)]*TO_DATE\(['\"](\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})['\"]"
-        
-        # Log the original query for debugging
-        logging.info(f"Original query before modification: {query[:100]}...")
-        
-        # Try to find matches
-        matches = re.findall(pattern, query)
-        if not matches:
-            # If the pattern didn't match, try a simpler approach: direct string replacement
-            logging.warning("Could not find date patterns using regex. Trying direct string replacement.")
-            
-            # Get all dates from the query that match the format YYYY-MM-DD HH:MM:SS
-            all_dates = re.findall(r"(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})", query)
-            if len(all_dates) >= 2:
-                # Replace the first and second occurrences
-                query = query.replace(all_dates[0], start_date, 1)
-                query = query.replace(all_dates[1], end_date, 1)
-            else:
-                logging.error(f"Could not find any dates in the query: {query}")
-                return False
-        else:
-            # Use regex substitution - replace each date range
-            # Match TO_DATE('any-date') pattern and replace the date inside
-            query = re.sub(r"TO_DATE\(['\"](\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})['\"]",
-                          lambda m, c=iter([start_date, end_date]): f"TO_DATE('{next(c)}'",
-                          query, count=2)
-        
-        # Write back the updated query
+        # Create a new SQL query with proper date range and country field
+        new_query = f"""-- Query updated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by {EXECUTION_USER}
+-- Date range: {start_date} to {end_date}
+
+SELECT 
+    net_report.net_date,
+    net_report.ctm_host_name,
+    net_report_data.fvalue,
+    net_report_data.jobs,
+    net_report.country_code as COUNTRY
+FROM 
+    CTMHK0068.net_report,
+    CTMHK0068.net_report_data
+WHERE 
+    net_report.report_id=net_report_data.report_id 
+    and net_report_data.fname='NODE_ID' 
+    and net_report.net_date 
+    BETWEEN TO_DATE('{start_date}', 'YYYY-MM-DD HH24:MI:SS') 
+    and TO_DATE('{end_date}', 'YYYY-MM-DD HH24:MI:SS')
+ORDER BY
+    net_report.net_date ASC;
+"""
+        # Create a backup of the original query first
+        backup_path = f"{query_path}.bak"
+        if os.path.exists(query_path):
+            with open(query_path, 'r') as f:
+                original_query = f.read()
+            with open(backup_path, 'w') as f:
+                f.write(original_query)
+            logging.info(f"Created backup of original query at {backup_path}")
+
+        # Write the new query
         with open(query_path, 'w') as f:
-            # Add comments to the query file for better logging
-            comment = f"-- Query updated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by {EXECUTION_USER}\n"
-            comment += f"-- Date range: {start_date} to {end_date}\n\n"
-            f.write(comment + query)
+            f.write(new_query)
+            
+        logging.info(f"Successfully created new query with date range: {start_date} to {end_date}")
+        logging.info("Added COUNTRY field and ensured proper date ordering")
         
-        # Verify the update was successful
-        with open(query_path, 'r') as f:
-            updated_query = f.read()
-            if start_date in updated_query and end_date in updated_query:
-                logging.info(f"Successfully updated query with date range: {start_date} to {end_date}")
-                # Print a few lines of the updated query for verification
-                first_few_lines = updated_query.split("\n")[:10]
-                logging.info("Updated query (first few lines):")
-                for line in first_few_lines:
-                    logging.info(line)
-                return True
-            else:
-                logging.error("Date range not found in updated query. Update failed.")
-                return False
+        return True
     except Exception as e:
         logging.error(f"Error updating query file: {str(e)}")
         return False
@@ -234,10 +216,12 @@ def main():
     if args.monthly:
         logging.info("Running with monthly date range flag (for PREVIOUS month)")
         start_date, end_date, month_name = get_previous_month_date_range()
+        
+        # Update SQL query with date range and add country field
         if not update_query_with_date_range(QUERY_FILE, start_date, end_date):
             logging.error("Failed to update query with previous month dates")
             return 1
-        
+            
         # Update Confluence page title with month name
         update_result = update_confluence_page_title(CONFIG_FILE, month_name)
         if update_result:
@@ -250,10 +234,12 @@ def main():
     elif args.daily:
         logging.info("Running with year-to-date range flag")
         start_date, end_date = get_ytd_date_range()
+        
+        # Update SQL query with date range and add country field
         if not update_query_with_date_range(QUERY_FILE, start_date, end_date):
             logging.error("Failed to update query with year-to-date range")
             return 1
-        
+            
         # Update Confluence page title with YTD
         update_result = update_confluence_page_title(CONFIG_FILE, "YTD")
         if update_result:
@@ -271,7 +257,7 @@ def main():
         print("2. Run setup_secure_config.py to encrypt your password in config.json")
         print("3. Use --no-publish flag to skip publishing")
         return 1
-
+regsion
     # Run the workflow
     run_workflow(
         CONFIG_FILE,
