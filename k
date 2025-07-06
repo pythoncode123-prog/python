@@ -372,79 +372,65 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
         df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
         df_summary = df_summary.sort_values('DATE')
         
-        # Sample dates to make x-axis less crowded (every 3rd date)
-        if len(df_summary) > 10:
-            df_summary = df_summary.iloc[::3, :]  # Every 3rd row
-        
-        # Format dates - use MM-DD format
+        # Format dates for x-axis
         df_summary['Day'] = df_summary['DATE'].dt.strftime('%m-%d')
         df_summary['FullDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
-        days = df_summary['Day'].tolist()
         
-        # Create baseline, peaks, max range data
-        baseline_values = [baseline] * len(days)
-        peaks_values = df_summary['TOTAL_JOBS'].tolist()
-        max_range_values = [2000000] * len(days)
+        # Generate chart data
+        chart_rows = []
         
-        # TRANSPOSE: Metrics as rows, dates as columns
-        chart_table_rows = ["<tr><th>Metric</th>"]
-        for day_str in days:
-            chart_table_rows[0] += f"<th>{day_str}</th>"
-        chart_table_rows[0] += "</tr>"
+        # Add header row with dates
+        date_row = "<tr><th>Date</th>"
+        for _, row in df_summary.iterrows():
+            date_row += f"<th>{row['Day']}</th>"
+        date_row += "</tr>"
+        chart_rows.append(date_row)
         
         # Add Baseline row
         baseline_row = "<tr><td>Baseline</td>"
-        for value in baseline_values:
-            baseline_row += f"<td>{int(value)}</td>"
+        for _ in range(len(df_summary)):
+            baseline_row += f"<td>{baseline}</td>"
         baseline_row += "</tr>"
-        chart_table_rows.append(baseline_row)
+        chart_rows.append(baseline_row)
         
         # Add Peaks row
         peaks_row = "<tr><td>Peaks</td>"
-        for value in peaks_values:
-            peaks_row += f"<td>{int(value)}</td>"
+        for _, row in df_summary.iterrows():
+            peaks_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
         peaks_row += "</tr>"
-        chart_table_rows.append(peaks_row)
+        chart_rows.append(peaks_row)
         
         # Add Max Range row
+        max_range = 2000000
         max_row = "<tr><td>Max Range</td>"
-        for value in max_range_values:
-            max_row += f"<td>{int(value)}</td>"
+        for _ in range(len(df_summary)):
+            max_row += f"<td>{max_range}</td>"
         max_row += "</tr>"
-        chart_table_rows.append(max_row)
+        chart_rows.append(max_row)
         
         return f"""
-<h3>Variation with Baseline Data</h3>
+<h3>Variation with Baseline Data:</h3>
 <ac:structured-macro ac:name="chart">
-    <ac:parameter ac:name="title">Variation with Baseline Data</ac:parameter>
-    <ac:parameter ac:name="type">area</ac:parameter>
+    <ac:parameter ac:name="title">Variation with Baseline Data:</ac:parameter>
+    <ac:parameter ac:name="type">line</ac:parameter>
     <ac:parameter ac:name="width">1000</ac:parameter>
-    <ac:parameter ac:name="height">400</ac:parameter>
+    <ac:parameter ac:name="height">500</ac:parameter>
     <ac:parameter ac:name="legend">true</ac:parameter>
-    <ac:parameter ac:name="dataDisplay">false</ac:parameter>
     <ac:parameter ac:name="xLabel">Date</ac:parameter>
     <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
-    <ac:parameter ac:name="color">green</ac:parameter>
-    <ac:parameter ac:name="labelAngle">45</ac:parameter>
-    <ac:parameter ac:name="labelSpacing">20</ac:parameter>
-    <ac:parameter ac:name="fontSize">12</ac:parameter>
-    <ac:parameter ac:name="labelFontSize">12</ac:parameter>
+    <ac:parameter ac:name="colors">#6B8E23,#0047AB,#DAA520</ac:parameter>
+    <ac:parameter ac:name="seriesColors">#6B8E23,#0047AB,#DAA520</ac:parameter>
+    <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
+    <ac:parameter ac:name="timeSeries">false</ac:parameter>
+    <ac:parameter ac:name="languageVersion">2</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
-                {"".join(chart_table_rows)}
+                {"".join(chart_rows)}
             </tbody>
         </table>
     </ac:rich-text-body>
 </ac:structured-macro>
-
-<h4>Transposed Data Structure (for debugging):</h4>
-<table class="wrapped">
-    <tbody>
-        {chart_table_rows[0]}
-        {chart_table_rows[1] if len(chart_table_rows) > 1 else '<tr><td colspan="4">No data</td></tr>'}
-    </tbody>
-</table>
 """
     except Exception as e:
         logging.error(f"Error generating baseline variation chart: {str(e)}")
@@ -460,28 +446,22 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
         df_monthly = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
         df_monthly = df_monthly.sort_values('DATE')
         
-        # Format the dates for x-axis - use DD-MM format as requested
-        df_monthly['Day'] = df_monthly['DATE'].dt.strftime('%d-%m')
+        # Format the dates for x-axis - use MM-DD format as shown in the screenshot
+        df_monthly['Day'] = df_monthly['DATE'].dt.strftime('%m-%d')
         df_monthly['FullDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
         
-        # Generate a simpler structure that will display properly in Confluence
+        # Generate the data rows
         chart_rows = []
         
-        # Add header row with dates
-        date_header = "<tr>"
+        # Add data rows for each date
         for _, row in df_monthly.iterrows():
-            date_header += f"<th>{row['Day']}</th>"
-        date_header += "</tr>"
-        chart_rows.append(date_header)
+            chart_rows.append(f"<tr><td>{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
         
-        # Add data row with total jobs
-        job_row = "<tr>"
+        # Use explicit HTML for generating a table at the bottom
+        table_rows = []
         for _, row in df_monthly.iterrows():
-            job_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
-        job_row += "</tr>"
-        chart_rows.append(job_row)
+            table_rows.append(f"<tr><td>{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
         
-        # Use specific parameters to match the image exactly
         return f"""
 <h3>Overall Monthly Task Usage Report:</h3>
 <ac:structured-macro ac:name="chart">
@@ -495,29 +475,39 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
     <ac:parameter ac:name="dataDisplay">true</ac:parameter>
     <ac:parameter ac:name="showValues">true</ac:parameter>
     <ac:parameter ac:name="valuePosition">inside</ac:parameter>
-    <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
     <ac:parameter ac:name="stacked">false</ac:parameter>
     <ac:parameter ac:name="color">#6B8E23</ac:parameter>
     <ac:parameter ac:name="colors">#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23,#6B8E23</ac:parameter>
     <ac:parameter ac:name="seriesColors">#6B8E23</ac:parameter>
-    <ac:parameter ac:name="barWidth">25</ac:parameter>
+    <ac:parameter ac:name="barWidth">20</ac:parameter>
     <ac:parameter ac:name="barSpacing">8</ac:parameter>
+    <ac:parameter ac:name="minValue">0</ac:parameter>
+    <ac:parameter ac:name="maxValue">1200000</ac:parameter>
     <ac:parameter ac:name="xLabel">Date</ac:parameter>
     <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
     <ac:parameter ac:name="labelAngle">90</ac:parameter>
-    <ac:parameter ac:name="fontSize">12</ac:parameter>
-    <ac:parameter ac:name="labelFontSize">10</ac:parameter>
-    <ac:parameter ac:name="fontColor">black</ac:parameter>
-    <ac:parameter ac:name="valueColor">black</ac:parameter>
-    <ac:parameter ac:name="showShapes">false</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
-                {"".join(chart_rows)}
+                <tr>
+                    <th>Date</th>
+                    <th>Total Jobs</th>
+                </tr>
+                {chr(10).join(chart_rows)}
             </tbody>
         </table>
     </ac:rich-text-body>
 </ac:structured-macro>
+
+<table class="wrapped">
+    <tbody>
+        <tr>
+            <th>Date</th>
+            <th>Total Jobs</th>
+        </tr>
+        {"".join(table_rows)}
+    </tbody>
+</table>
 """
     except Exception as e:
         logging.error(f"Error generating monthly task usage chart: {str(e)}")
@@ -908,7 +898,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         baseline = config.get('BASELINE', 1899206)
         
         # Generate the report content with the updated timestamp and user
-        execution_timestamp = datetime.strptime('2025-07-06 15:33:01', '%Y-%m-%d %H:%M:%S')
+        execution_timestamp = datetime.strptime('2025-07-06 15:46:17', '%Y-%m-%d %H:%M:%S')
         execution_user = 'satish537'
         
         content = f"""
