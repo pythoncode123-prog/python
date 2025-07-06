@@ -1,3 +1,4 @@
+import requests
 from requests.auth import HTTPBasicAuth
 import pandas as pd
 import json
@@ -6,7 +7,7 @@ import os
 import csv
 from datetime import datetime
 import logging
-import requests
+import sys
 from typing import Tuple, Optional, Dict, List
 
 # Disable insecure connection warnings for Confluence API
@@ -449,30 +450,19 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame, baseline: int = 1899206)
         # Format dates for display in MM-DD format for better readability
         df_monthly['Day'] = df_monthly['DATE'].dt.strftime('%m-%d')
         
-        # Add the constant baseline value for all dates
-        baseline_df = df_monthly.copy()
-        baseline_df['Series'] = 'Baseline'
-        baseline_df['Value'] = baseline
-        
-        # Prepare the data for TOTAL_JOBS
-        jobs_df = df_monthly.copy()
-        jobs_df['Series'] = 'Sum of TOTAL_JOBS'
-        jobs_df['Value'] = jobs_df['TOTAL_JOBS']
-        
-        # Create data for the chart in the required format for Confluence
-        # Header row with Series and then all dates
+        # Create header row with dates
         header_row = "<tr><th>Series</th>"
         for _, row in df_monthly.iterrows():
             header_row += f"<th>{row['Day']}</th>"
         header_row += "</tr>"
         
-        # Baseline row (constant value)
+        # Add Baseline row (constant value)
         baseline_row = "<tr><td>Baseline</td>"
         for _ in range(len(df_monthly)):
             baseline_row += f"<td>{baseline}</td>"
         baseline_row += "</tr>"
         
-        # TOTAL_JOBS row (actual data)
+        # Add Total Jobs row (actual data)
         jobs_row = "<tr><td>Sum of TOTAL_JOBS</td>"
         for _, row in df_monthly.iterrows():
             jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
@@ -489,13 +479,14 @@ def generate_monthly_task_usage_chart(df: pd.DataFrame, baseline: int = 1899206)
     <ac:parameter ac:name="dataDisplay">false</ac:parameter>
     <ac:parameter ac:name="stacked">false</ac:parameter>
     <ac:parameter ac:name="opacity">70</ac:parameter>
-    <ac:parameter ac:name="showShapes">true</ac:parameter>
+    <ac:parameter ac:name="showShapes">false</ac:parameter>
     <ac:parameter ac:name="xLabel">Date</ac:parameter>
     <ac:parameter ac:name="yLabel">Task Count</ac:parameter>
     <ac:parameter ac:name="colors">#6B8E23,#B22222</ac:parameter>
     <ac:parameter ac:name="seriesColors">#6B8E23,#B22222</ac:parameter>
     <ac:parameter ac:name="thickness">2</ac:parameter>
     <ac:parameter ac:name="labelAngle">45</ac:parameter>
+    <ac:parameter ac:name="yAxisLowerBound">0</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -535,73 +526,6 @@ def generate_daily_summary_table(df: pd.DataFrame) -> str:
     except Exception as e:
         logging.error(f"Error generating daily summary table: {str(e)}")
         return f"<p>Error generating daily summary table: {str(e)}</p>"
-
-def generate_daily_trend_chart(df: pd.DataFrame) -> str:
-    """Generate the daily trend chart for the Confluence page."""
-    try:
-        # Ensure TOTAL_JOBS is numeric
-        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
-        
-        df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
-        df_summary = df_summary.sort_values('DATE')
-        
-        # Sample dates to make x-axis less crowded if needed
-        if len(df_summary) > 15:
-            df_summary = df_summary.iloc[::2, :]  # Every 2nd row
-        
-        # Format date - use MM-DD format
-        df_summary['Day'] = df_summary['DATE'].dt.strftime('%m-%d')
-        df_summary['FullDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
-        
-        # Generate chart rows
-        chart_rows = []
-        for _, row in df_summary.iterrows():
-            chart_rows.append(f"<tr><td>{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
-        
-        # Use area chart instead of line (better supported)
-        return f"""
-<h3>Daily Job Volumes Trend</h3>
-<ac:structured-macro ac:name="chart">
-    <ac:parameter ac:name="title">Daily Job Volumes Trend</ac:parameter>
-    <ac:parameter ac:name="type">area</ac:parameter>
-    <ac:parameter ac:name="orientation">vertical</ac:parameter>
-    <ac:parameter ac:name="width">1000</ac:parameter>
-    <ac:parameter ac:name="height">400</ac:parameter>
-    <ac:parameter ac:name="dataDisplay">true</ac:parameter>
-    <ac:parameter ac:name="color">green</ac:parameter>
-    <ac:parameter ac:name="xLabel">Date</ac:parameter>
-    <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
-    <ac:parameter ac:name="labelAngle">45</ac:parameter>
-    <ac:parameter ac:name="labelSpacing">20</ac:parameter>
-    <ac:parameter ac:name="fontSize">12</ac:parameter>
-    <ac:parameter ac:name="labelFontSize">12</ac:parameter>
-    <ac:rich-text-body>
-        <table>
-            <tbody>
-                <tr>
-                    <th>Date</th>
-                    <th>Total Jobs</th>
-                </tr>
-                {chr(10).join(chart_rows)}
-            </tbody>
-        </table>
-    </ac:rich-text-body>
-</ac:structured-macro>
-
-<h3>Daily Job Volumes</h3>
-<table class="wrapped">
-    <tbody>
-        <tr>
-            <th>Date</th>
-            <th>Total Jobs</th>
-        </tr>
-        {"".join([f"<tr><td>{row['FullDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>" for _, row in df_summary.iterrows()])}
-    </tbody>
-</table>
-"""
-    except Exception as e:
-        logging.error(f"Error generating daily trend chart: {str(e)}")
-        return f"<p>Error generating daily trend chart: {str(e)}</p>"
 
 def generate_peaks_variation_table(df: pd.DataFrame, baseline: int = 1899206) -> str:
     """Generate the peaks variation table for the Confluence page."""
@@ -896,10 +820,10 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         baseline = config.get('BASELINE', 1899206)
         
         # Generate the report content with the updated timestamp and user
-        execution_timestamp = datetime.strptime('2025-07-06 23:14:31', '%Y-%m-%d %H:%M:%S')
+        execution_timestamp = datetime.strptime('2025-07-06 23:36:01', '%Y-%m-%d %H:%M:%S')
         execution_user = 'satish537'
         
-        # Make the Monthly Task Usage chart the first chart after the header
+        # Put the Monthly Task Usage chart first after the header
         content = f"""
 <h1>Monthly Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {execution_timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
