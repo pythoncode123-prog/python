@@ -1,0 +1,949 @@
+import requests
+from requests.auth import HTTPBasicAuth
+import pandas as pd
+import json
+import urllib3
+import os
+import csv
+from datetime import datetime
+import logging
+from typing import Tuple, Optional, Dict, List
+
+# Disable insecure connection warnings for Confluence API
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+def load_config(config_path: str = "config.json") -> Dict:
+    """Load Confluence configuration from JSON file."""
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        required_keys = ['CONFLUENCE_URL', 'USERNAME', 'SPACE_KEY', 'PAGE_TITLE']
+        if not all(key in config for key in required_keys):
+            logging.error(f"Missing required configuration keys. Required: {required_keys}")
+            return None
+            
+        # Check if BASELINE exists, if not add default value
+        if 'BASELINE' not in config:
+            config['BASELINE'] = 1899206
+            
+        return config
+    except Exception as e:
+        logging.error(f"Error loading Confluence config: {str(e)}")
+        return None
+
+def get_password_from_config(config):
+    """Get decrypted password from config if available."""
+    if 'PASSWORD_ENCRYPTED' in config:
+        try:
+            from lib.secure_config import SecureConfig
+            return SecureConfig.decrypt_password(config['PASSWORD_ENCRYPTED'])
+        except Exception as e:
+            logging.error(f"Error decrypting password: {str(e)}")
+            return None
+    return None
+
+def create_session(config: Dict) -> requests.Session:
+    """Create a configured requests session for Confluence API."""
+    session = requests.Session()
+    
+    # Try different authentication methods
+    auth_type = config.get('AUTH_TYPE', 'basic')
+    
+    if auth_type == 'basic':
+        # First try to get password from environment variable
+        password = os.environ.get('CONFLUENCE_PASSWORD')
+        
+        # If not found, try to get decrypted password from config
+        if not password:
+            password = get_password_from_config(config)
+        
+        if password:
+            # Use password from environment or decrypted from config
+            session.auth = HTTPBasicAuth(config['USERNAME'], password)
+        elif 'API_TOKEN' in config:
+            # Fall back to API token if available
+            session.auth = HTTPBasicAuth(config['USERNAME'], config['API_TOKEN'])
+        else:
+            logging.error("No authentication credentials found.")
+            return None
+    elif auth_type == 'jwt':
+        # JWT token authentication
+        token = os.environ.get('CONFLUENCE_TOKEN') or config.get('API_TOKEN')
+        if token:
+            session.headers.update({
+                "Authorization": f"Bearer {token}"
+            })
+        else:
+            logging.error("No token available for JWT authentication")
+            return None
+    elif auth_type == 'cookie':
+        # Cookie-based authentication
+        cookie = os.environ.get('CONFLUENCE_COOKIE') or config.get('SESSION_COOKIE')
+        if cookie:
+            session.headers.update({
+                "Cookie": cookie
+            })
+        else:
+            logging.error("No cookie available for cookie authentication")
+            return None
+    
+    # Common headers
+    session.headers.update({
+        "Content-Type": "application/json",
+        "X-Atlassian-Token": "no-check"
+    })
+    
+    # Handle proxy settings if provided
+    if 'PROXY' in config:
+        session.proxies = {
+            "http": config['PROXY'],
+            "https": config['PROXY']
+        }
+    
+    session.verify = False
+    return session
+
+def load_csv_data(csv_file: str) -> Tuple[pd.DataFrame, bool]:
+    """Load CSV file into a pandas DataFrame."""
+    try:
+        df = pd.read_csv(csv_file)
+        
+        # Convert DATE column to datetime if it exists
+        if 'DATE' in df.columns:
+            df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
+        
+        # Convert TOTAL_JOBS to numeric if it exists
+        if 'TOTAL_JOBS' in df.columns:
+            df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+            
+        return df, True
+    except Exception as e:
+        logging.error(f"Error loading CSV data: {str(e)}")
+        return pd.DataFrame(), False
+
+def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
+    """Generate the main table and chart for the Confluence page."""
+    try:
+        # Ensure TOTAL_JOBS is numeric
+        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        # Create a copy of the dataframe to avoid modifying the original
+        chart_df = df.copy()
+        chart_df = chart_df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+        
+        # Get top 4 dates by TOTAL_JOBS
+        try:
+            chart_df = chart_df.nlargest(4, 'TOTAL_JOBS')
+        except Exception as e:
+            logging.warning(f"Could not use nlargest: {e}")
+            chart_df = chart_df.sort_values('TOTAL_JOBS', ascending=False).head(4)
+        
+        chart_df['Baseline'] = baseline
+        chart_df['Variation'] = baseline - chart_df['TOTAL_JOBS']
+        
+        # Format the DATE column for display - use MM-DD format
+        chart_df['FormattedDate'] = chart_df['DATE'].dt.strftime('%m-%d')
+        chart_df['FullDate'] = chart_df['DATE'].dt.strftime('%m/%d/%Y')
+        
+        # Generate table rows for the data table below the chart (with Variation column)
+        table_rows = ["<tr><th>Date</th><th>Baseline</th><th>Total Jobs</th><th>Variation</th></tr>"]
+        for _, row in chart_df.iterrows():
+            # Add color coding to variation - green if positive (below baseline), red if negative
+            variation_style = 'style="background-color: #90EE90;"' if row['Variation'] > 0 else 'style="background-color: #FFB6C1;"'
+            table_rows.append(
+                f"<tr><td>{row['FullDate']}</td><td>{int(row['Baseline'])}</td><td>{int(row['TOTAL_JOBS'])}</td><td {variation_style}>{int(row['Variation'])}</td></tr>"
+            )
+        
+        # Create a chart title based on the month
+        month_name = chart_df['DATE'].dt.strftime('%b').iloc[0] if not chart_df.empty else "Month"
+        chart_title = f"4th Peak of {month_name}:"
+        
+        # Try alternative data structure - transpose the data
+        # Create side-by-side comparison by making separate series for each metric
+        chart_table_rows = ["<tr><th>Metric</th>"]
+        
+        # Add date headers - use MM-DD format
+        for _, row in chart_df.iterrows():
+            chart_table_rows[0] += f"<th>{row['FormattedDate']}</th>"
+        chart_table_rows[0] += "</tr>"
+        
+        # Add Baseline row
+        baseline_row = "<tr><td>Baseline</td>"
+        for _, row in chart_df.iterrows():
+            baseline_row += f"<td>{int(row['Baseline'])}</td>"
+        baseline_row += "</tr>"
+        chart_table_rows.append(baseline_row)
+        
+        # Add Total Jobs row
+        jobs_row = "<tr><td>Total Jobs</td>"
+        for _, row in chart_df.iterrows():
+            jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+        jobs_row += "</tr>"
+        chart_table_rows.append(jobs_row)
+        
+        return f"""
+<ac:structured-macro ac:name="chart">
+    <ac:parameter ac:name="title">{chart_title}</ac:parameter>
+    <ac:parameter ac:name="type">bar</ac:parameter>
+    <ac:parameter ac:name="orientation">vertical</ac:parameter>
+    <ac:parameter ac:name="width">600</ac:parameter>
+    <ac:parameter ac:name="height">400</ac:parameter>
+    <ac:parameter ac:name="3D">true</ac:parameter>
+    <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">true</ac:parameter>
+    <ac:parameter ac:name="stacked">false</ac:parameter>
+    <ac:parameter ac:name="showValues">true</ac:parameter>
+    <ac:parameter ac:name="valuePosition">inside</ac:parameter>
+    <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
+    <ac:parameter ac:name="color">green</ac:parameter>
+    <ac:parameter ac:name="labelAngle">45</ac:parameter>
+    <ac:parameter ac:name="labelSpacing">50</ac:parameter>
+    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
+    <ac:rich-text-body>
+        <table>
+            <tbody>
+                {"".join(chart_table_rows)}
+            </tbody>
+        </table>
+    </ac:rich-text-body>
+</ac:structured-macro>
+
+<h3>Daily Peaks vs Baseline</h3>
+<table class="wrapped">
+    <tbody>
+        {"".join(table_rows)}
+    </tbody>
+</table>
+"""
+    except Exception as e:
+        logging.error(f"Error generating table and chart: {str(e)}")
+        return f"<p>Error generating table and chart: {str(e)}</p>"
+
+def generate_region_chart(df: pd.DataFrame) -> str:
+    """Generate the region chart for the Confluence page."""
+    try:
+        if not {'DATE', 'REGION', 'TOTAL_JOBS'}.issubset(df.columns):
+            return "<p>Missing required columns for region chart: DATE, REGION, TOTAL_JOBS</p>"
+
+        # Ensure TOTAL_JOBS is numeric
+        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        # Aggregate jobs by region (ignore dates for pie chart)
+        region_summary = df.groupby('REGION', as_index=False)['TOTAL_JOBS'].sum()
+        
+        # Generate table rows
+        table_rows = []
+        for _, row in region_summary.iterrows():
+            table_rows.append(f"<tr><td>{row['REGION']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+        
+        # Keep pie chart for regions as it makes sense for distribution
+        return f"""
+<ac:structured-macro ac:name="chart">
+    <ac:parameter ac:name="title">Jobs by Region</ac:parameter>
+    <ac:parameter ac:name="type">pie</ac:parameter>
+    <ac:parameter ac:name="width">400</ac:parameter>
+    <ac:parameter ac:name="height">300</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">true</ac:parameter>
+    <ac:parameter ac:name="color">green</ac:parameter>
+    <ac:rich-text-body>
+        <table>
+            <tbody>
+                <tr>
+                    <th>Region</th>
+                    <th>Total Jobs</th>
+                </tr>
+                {chr(10).join(table_rows)}
+            </tbody>
+        </table>
+    </ac:rich-text-body>
+</ac:structured-macro>
+
+<h3>Total Jobs by Region</h3>
+<table class="wrapped">
+    <tbody>
+        <tr>
+            <th>Region</th>
+            <th>Total Jobs</th>
+        </tr>
+        {"".join(table_rows)}
+    </tbody>
+</table>
+"""
+    except Exception as e:
+        logging.error(f"Error generating region chart: {str(e)}")
+        return f"<p>Error generating region chart: {str(e)}</p>"
+
+def generate_daily_usage_by_region_chart(df: pd.DataFrame) -> str:
+    """Generate the daily usage chart by region (line chart with dates on x-axis)."""
+    try:
+        if not {'DATE', 'REGION', 'TOTAL_JOBS'}.issubset(df.columns):
+            return "<p>Missing required columns for daily usage by region chart: DATE, REGION, TOTAL_JOBS</p>"
+
+        # Ensure TOTAL_JOBS is numeric
+        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        # Sort by date to ensure proper timeline
+        df_sorted = df.sort_values('DATE')
+        
+        # Get unique regions and dates - consider sampling to reduce x-axis crowding
+        regions = sorted(df_sorted['REGION'].unique())
+        dates = sorted(df_sorted['DATE'].unique())
+        
+        # Sample dates to make x-axis less crowded (every 3rd date)
+        if len(dates) > 10:
+            sampled_dates = dates[::3]  # Every 3rd date
+        else:
+            sampled_dates = dates
+        
+        # Format dates for display - use MM-DD format
+        formatted_dates = [pd.to_datetime(date).strftime('%m-%d') for date in sampled_dates]
+        
+        # TRANSPOSE THE DATA STRUCTURE
+        # Since Confluence is reading it backwards, let's build it the opposite way
+        # Put regions as rows (first column) and dates as columns
+        
+        # Create header with Region first, then dates (using MM-DD format)
+        chart_table_rows = ["<tr><th>Region</th>"]
+        for date_str in formatted_dates:
+            chart_table_rows[0] += f"<th>{date_str}</th>"
+        chart_table_rows[0] += "</tr>"
+        
+        # Add data rows - each row is a region with values for each date
+        for region in regions:
+            data_row = f"<tr><td>{region}</td>"
+            for date in sampled_dates:
+                region_date_data = df_sorted[(df_sorted['REGION'] == region) & (df_sorted['DATE'] == date)]
+                value = int(region_date_data['TOTAL_JOBS'].sum()) if not region_date_data.empty else 0
+                data_row += f"<td>{value}</td>"
+            data_row += "</tr>"
+            chart_table_rows.append(data_row)
+        
+        return f"""
+<h3>Daily Task Usage Report by Region</h3>
+<ac:structured-macro ac:name="chart">
+    <ac:parameter ac:name="title">Daily Task Usage Report</ac:parameter>
+    <ac:parameter ac:name="type">line</ac:parameter>
+    <ac:parameter ac:name="width">1000</ac:parameter>
+    <ac:parameter ac:name="height">400</ac:parameter>
+    <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">false</ac:parameter>
+    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
+    <ac:parameter ac:name="color">green</ac:parameter>
+    <ac:parameter ac:name="showShapes">true</ac:parameter>
+    <ac:parameter ac:name="opacity">80</ac:parameter>
+    <ac:parameter ac:name="labelAngle">45</ac:parameter>
+    <ac:parameter ac:name="labelSpacing">20</ac:parameter>
+    <ac:parameter ac:name="lineStyle">solid</ac:parameter>
+    <ac:parameter ac:name="fontColor">black</ac:parameter>
+    <ac:parameter ac:name="fontSize">12</ac:parameter>
+    <ac:parameter ac:name="labelFontSize">12</ac:parameter>
+    <ac:parameter ac:name="backgroundColor">white</ac:parameter>
+    <ac:rich-text-body>
+        <table>
+            <tbody>
+                {"".join(chart_table_rows)}
+            </tbody>
+        </table>
+    </ac:rich-text-body>
+</ac:structured-macro>
+
+<h4>Transposed Data Structure (for debugging):</h4>
+<table class="wrapped">
+    <tbody>
+        {chart_table_rows[0]}
+        {chart_table_rows[1] if len(chart_table_rows) > 1 else '<tr><td colspan="9">No data</td></tr>'}
+    </tbody>
+</table>
+"""
+    except Exception as e:
+        logging.error(f"Error generating daily usage by region chart: {str(e)}")
+        return f"<p>Error generating daily usage by region chart: {str(e)}</p>"
+
+def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
+    """Generate the variation with baseline chart with dates on x-axis."""
+    try:
+        # Ensure TOTAL_JOBS is numeric
+        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        # Aggregate by date and sort
+        df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+        df_summary = df_summary.sort_values('DATE')
+        
+        # Sample dates to make x-axis less crowded (every 3rd date)
+        if len(df_summary) > 10:
+            df_summary = df_summary.iloc[::3, :]  # Every 3rd row
+        
+        # Format dates - use MM-DD format
+        df_summary['Day'] = df_summary['DATE'].dt.strftime('%m-%d')
+        df_summary['FullDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
+        days = df_summary['Day'].tolist()
+        
+        # Create baseline, peaks, max range data
+        baseline_values = [baseline] * len(days)
+        peaks_values = df_summary['TOTAL_JOBS'].tolist()
+        max_range_values = [2000000] * len(days)
+        
+        # TRANSPOSE: Metrics as rows, dates as columns
+        chart_table_rows = ["<tr><th>Metric</th>"]
+        for day_str in days:
+            chart_table_rows[0] += f"<th>{day_str}</th>"
+        chart_table_rows[0] += "</tr>"
+        
+        # Add Baseline row
+        baseline_row = "<tr><td>Baseline</td>"
+        for value in baseline_values:
+            baseline_row += f"<td>{int(value)}</td>"
+        baseline_row += "</tr>"
+        chart_table_rows.append(baseline_row)
+        
+        # Add Peaks row
+        peaks_row = "<tr><td>Peaks</td>"
+        for value in peaks_values:
+            peaks_row += f"<td>{int(value)}</td>"
+        peaks_row += "</tr>"
+        chart_table_rows.append(peaks_row)
+        
+        # Add Max Range row
+        max_row = "<tr><td>Max Range</td>"
+        for value in max_range_values:
+            max_row += f"<td>{int(value)}</td>"
+        max_row += "</tr>"
+        chart_table_rows.append(max_row)
+        
+        return f"""
+<h3>Variation with Baseline Data</h3>
+<ac:structured-macro ac:name="chart">
+    <ac:parameter ac:name="title">Variation with Baseline Data</ac:parameter>
+    <ac:parameter ac:name="type">area</ac:parameter>
+    <ac:parameter ac:name="width">1000</ac:parameter>
+    <ac:parameter ac:name="height">400</ac:parameter>
+    <ac:parameter ac:name="legend">true</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">false</ac:parameter>
+    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
+    <ac:parameter ac:name="color">green</ac:parameter>
+    <ac:parameter ac:name="labelAngle">45</ac:parameter>
+    <ac:parameter ac:name="labelSpacing">20</ac:parameter>
+    <ac:parameter ac:name="fontSize">12</ac:parameter>
+    <ac:parameter ac:name="labelFontSize">12</ac:parameter>
+    <ac:rich-text-body>
+        <table>
+            <tbody>
+                {"".join(chart_table_rows)}
+            </tbody>
+        </table>
+    </ac:rich-text-body>
+</ac:structured-macro>
+
+<h4>Transposed Data Structure (for debugging):</h4>
+<table class="wrapped">
+    <tbody>
+        {chart_table_rows[0]}
+        {chart_table_rows[1] if len(chart_table_rows) > 1 else '<tr><td colspan="4">No data</td></tr>'}
+    </tbody>
+</table>
+"""
+    except Exception as e:
+        logging.error(f"Error generating baseline variation chart: {str(e)}")
+        return f"<p>Error generating baseline variation chart: {str(e)}</p>"
+
+def generate_monthly_task_usage_chart(df: pd.DataFrame) -> str:
+    """Generate the overall monthly task usage chart with dates on x-axis."""
+    try:
+        # Ensure TOTAL_JOBS is numeric
+        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        # Sort by date and aggregate by date
+        df_monthly = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+        df_monthly = df_monthly.sort_values('DATE')
+        
+        # Format the dates for x-axis - use DD-MM format as requested
+        df_monthly['Day'] = df_monthly['DATE'].dt.strftime('%d-%m')
+        df_monthly['FullDate'] = df_monthly['DATE'].dt.strftime('%m/%d/%Y')
+        
+        # Generate chart rows
+        chart_rows = []
+        for _, row in df_monthly.iterrows():
+            chart_rows.append(f"<tr><td>{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+        
+        # Use specific parameters to match the image exactly
+        return f"""
+<h3>Overall Monthly Task Usage Report:</h3>
+<ac:structured-macro ac:name="chart">
+    <ac:parameter ac:name="title">Overall Monthly Task Usage Report:</ac:parameter>
+    <ac:parameter ac:name="type">bar</ac:parameter>
+    <ac:parameter ac:name="orientation">vertical</ac:parameter>
+    <ac:parameter ac:name="width">1000</ac:parameter>
+    <ac:parameter ac:name="height">500</ac:parameter>
+    <ac:parameter ac:name="3D">true</ac:parameter>
+    <ac:parameter ac:name="legend">false</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">true</ac:parameter>
+    <ac:parameter ac:name="showValues">true</ac:parameter>
+    <ac:parameter ac:name="valuePosition">inside</ac:parameter>
+    <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
+    <ac:parameter ac:name="stacked">false</ac:parameter>
+    <ac:parameter ac:name="color">#4F7942</ac:parameter>
+    <ac:parameter ac:name="colors">#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942,#4F7942</ac:parameter>
+    <ac:parameter ac:name="seriesColors">#4F7942</ac:parameter>
+    <ac:parameter ac:name="spacing">true</ac:parameter>
+    <ac:parameter ac:name="barWidth">15</ac:parameter>
+    <ac:parameter ac:name="barGap">5</ac:parameter>
+    <ac:parameter ac:name="minValue">0</ac:parameter>
+    <ac:parameter ac:name="maxValue">1200000</ac:parameter>
+    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
+    <ac:parameter ac:name="labelAngle">90</ac:parameter>
+    <ac:parameter ac:name="fontSize">12</ac:parameter>
+    <ac:parameter ac:name="labelFontSize">12</ac:parameter>
+    <ac:rich-text-body>
+        <table>
+            <tbody>
+                <tr>
+                    <th>Date</th>
+                    <th>Total Jobs</th>
+                </tr>
+                {chr(10).join(chart_rows)}
+            </tbody>
+        </table>
+    </ac:rich-text-body>
+</ac:structured-macro>
+"""
+    except Exception as e:
+        logging.error(f"Error generating monthly task usage chart: {str(e)}")
+        return f"<p>Error generating monthly task usage chart: {str(e)}</p>"
+
+def generate_daily_summary_table(df: pd.DataFrame) -> str:
+    """Generate the daily summary table for the Confluence page."""
+    try:
+        # Ensure TOTAL_JOBS is numeric
+        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+        df_summary['FormattedDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
+        
+        rows = ["<tr><th>Date</th><th>Total Jobs</th></tr>"]
+        for _, row in df_summary.iterrows():
+            rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+        
+        return f"""
+<h3>Total Jobs Per Day</h3>
+<table class="wrapped">
+    <tbody>
+        {"".join(rows)}
+    </tbody>
+</table>
+"""
+    except Exception as e:
+        logging.error(f"Error generating daily summary table: {str(e)}")
+        return f"<p>Error generating daily summary table: {str(e)}</p>"
+
+def generate_daily_trend_chart(df: pd.DataFrame) -> str:
+    """Generate the daily trend chart for the Confluence page."""
+    try:
+        # Ensure TOTAL_JOBS is numeric
+        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+        df_summary = df_summary.sort_values('DATE')
+        
+        # Sample dates to make x-axis less crowded if needed
+        if len(df_summary) > 15:
+            df_summary = df_summary.iloc[::2, :]  # Every 2nd row
+        
+        # Format date - use MM-DD format
+        df_summary['Day'] = df_summary['DATE'].dt.strftime('%m-%d')
+        df_summary['FullDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
+        
+        # Generate chart rows
+        chart_rows = []
+        for _, row in df_summary.iterrows():
+            chart_rows.append(f"<tr><td>{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+        
+        # Use area chart instead of line (better supported)
+        return f"""
+<h3>Daily Job Volumes Trend</h3>
+<ac:structured-macro ac:name="chart">
+    <ac:parameter ac:name="title">Daily Job Volumes Trend</ac:parameter>
+    <ac:parameter ac:name="type">area</ac:parameter>
+    <ac:parameter ac:name="orientation">vertical</ac:parameter>
+    <ac:parameter ac:name="width">1000</ac:parameter>
+    <ac:parameter ac:name="height">400</ac:parameter>
+    <ac:parameter ac:name="dataDisplay">true</ac:parameter>
+    <ac:parameter ac:name="color">green</ac:parameter>
+    <ac:parameter ac:name="xLabel">Date</ac:parameter>
+    <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
+    <ac:parameter ac:name="labelAngle">45</ac:parameter>
+    <ac:parameter ac:name="labelSpacing">20</ac:parameter>
+    <ac:parameter ac:name="fontSize">12</ac:parameter>
+    <ac:parameter ac:name="labelFontSize">12</ac:parameter>
+    <ac:rich-text-body>
+        <table>
+            <tbody>
+                <tr>
+                    <th>Date</th>
+                    <th>Total Jobs</th>
+                </tr>
+                {chr(10).join(chart_rows)}
+            </tbody>
+        </table>
+    </ac:rich-text-body>
+</ac:structured-macro>
+
+<h3>Daily Job Volumes</h3>
+<table class="wrapped">
+    <tbody>
+        <tr>
+            <th>Date</th>
+            <th>Total Jobs</th>
+        </tr>
+        {"".join([f"<tr><td>{row['FullDate']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>" for _, row in df_summary.iterrows()])}
+    </tbody>
+</table>
+"""
+    except Exception as e:
+        logging.error(f"Error generating daily trend chart: {str(e)}")
+        return f"<p>Error generating daily trend chart: {str(e)}</p>"
+
+def generate_peaks_variation_table(df: pd.DataFrame, baseline: int = 1899206) -> str:
+    """Generate the peaks variation table for the Confluence page."""
+    try:
+        # Ensure TOTAL_JOBS is numeric
+        df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        max_range = 2000000 
+        
+        df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+        df_summary['FormattedDate'] = df_summary['DATE'].dt.strftime('%m/%d/%Y')
+        df_summary['Baseline'] = baseline
+        df_summary['Variation'] = df_summary['Baseline'] - df_summary['TOTAL_JOBS']
+        
+        rows = ["<tr><th>Date</th><th>Peaks</th><th>Variation with Baseline</th><th>Baseline</th><th>Max Range</th></tr>"]
+        for _, row in df_summary.iterrows():
+            rows.append(f"<tr><td>{row['FormattedDate']}</td><td>{int(row['TOTAL_JOBS'])}</td><td>{int(row['Variation'])}</td><td>{int(row['Baseline'])}</td><td>{max_range}</td></tr>")
+        
+        return f"""
+<h3>Daily Peaks vs Baseline</h3>
+<table class="wrapped">
+    <tbody>
+        {"".join(rows)}
+    </tbody>
+</table>
+"""
+    except Exception as e:
+        logging.error(f"Error generating peaks variation table: {str(e)}")
+        return f"<p>Error generating peaks variation table: {str(e)}</p>"
+
+def get_page_info(session: requests.Session, config: Dict) -> Tuple[Optional[str], Optional[int]]:
+    """Get the Confluence page ID and current version number."""
+    try:
+        base_url = config['CONFLUENCE_URL'].rstrip('/')
+        
+        # If URL ends with '/content', use it as is, otherwise adjust
+        if not base_url.endswith('/content'):
+            if base_url.endswith('/rest/api'):
+                base_url = f"{base_url}/content"
+            else:
+                base_url = f"{base_url}/rest/api/content"
+        
+        # Make sure URL matches Confluence Cloud vs Server format
+        search_url = base_url
+        if '?' not in search_url:
+            search_url += '?'
+        
+        params = {
+            'title': config['PAGE_TITLE'],
+            'spaceKey': config['SPACE_KEY'],
+            'expand': 'version'
+        }
+        
+        logging.info(f"Getting page info from URL: {search_url}")
+        
+        # Try using URL params
+        response = session.get(search_url, params=params)
+        if response.status_code != 200:
+            # Try again with path format for older Confluence
+            alt_url = f"{base_url}/search?cql=space={config['SPACE_KEY']} AND title=\"{config['PAGE_TITLE']}\""
+            logging.info(f"First attempt failed, trying: {alt_url}")
+            response = session.get(alt_url)
+        
+        if response.status_code != 200:
+            logging.error(f"Get page info failed: {response.status_code} - {response.text}")
+            return None, None
+            
+        data = response.json()
+        
+        # Handle different response formats for different Confluence versions
+        if 'results' in data:
+            if data.get('size', 0) > 0:  # Confluence Cloud format
+                return data['results'][0]['id'], data['results'][0]['version']['number']
+            else:
+                return None, None
+        elif isinstance(data, list) and len(data) > 0:  # Some Confluence Server versions
+            return data[0]['id'], data[0]['version']['number'] 
+        else:
+            logging.error("Unexpected response format from Confluence API")
+            logging.debug(f"Response: {data}")
+            return None, None
+            
+    except Exception as e:
+        logging.error(f"Error getting page info: {str(e)}")
+        return None, None
+
+def create_or_update_page(session: requests.Session, config: Dict, content: str, page_id: Optional[str] = None, version: Optional[int] = None) -> bool:
+    """Create a new page or update an existing page in Confluence."""
+    try:
+        base_url = config['CONFLUENCE_URL'].rstrip('/')
+        
+        # If URL ends with '/content', use it as is, otherwise adjust
+        if not base_url.endswith('/content'):
+            if base_url.endswith('/rest/api'):
+                base_url = f"{base_url}/content"
+            else:
+                base_url = f"{base_url}/rest/api/content"
+        
+        payload = {
+            "type": "page",
+            "title": config['PAGE_TITLE'],
+            "space": {"key": config['SPACE_KEY']},
+            "body": {"storage": {"value": content, "representation": "storage"}}
+        }
+
+        if page_id and version is not None:
+            payload["id"] = page_id
+            payload["version"] = {"number": version + 1}
+            
+            logging.info(f"Updating page ID {page_id} at URL: {base_url}/{page_id}")
+            response = session.put(f"{base_url}/{page_id}", json=payload)
+        else:
+            logging.info(f"Creating new page at URL: {base_url}")
+            response = session.post(base_url, json=payload)
+        
+        if response.status_code >= 400:
+            logging.error(f"API request failed: {response.status_code} - {response.text}")
+            return False
+            
+        logging.info(f"Page '{config['PAGE_TITLE']}' {'updated' if page_id else 'created'} successfully.")
+        return True
+    except Exception as e:
+        logging.error(f"Error creating/updating page: {str(e)}")
+        return False
+
+def test_connection(session: requests.Session, config: Dict) -> bool:
+    """Test the connection to Confluence API."""
+    try:
+        base_url = config['CONFLUENCE_URL'].rstrip('/')
+        if base_url.endswith('/content'):
+            # Remove /content for the space endpoint
+            base_url = base_url[:-8]
+        elif not base_url.endswith('/rest/api'):
+            base_url = f"{base_url}/rest/api"
+        
+        # Try to get spaces (lightweight API call)
+        test_url = f"{base_url}/space"
+        
+        logging.info(f"Testing connection to: {test_url}")
+        response = session.get(test_url, params={"limit": 1})
+        
+        if response.status_code == 200:
+            logging.info("Connection test successful")
+            return True
+        else:
+            logging.error(f"Connection test failed: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logging.error(f"Connection test failed with exception: {str(e)}")
+        return False
+
+def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mode=False, skip_actual_upload=False):
+    """
+    Publish report data to Confluence.
+    
+    Args:
+        report_file: CSV file containing report data
+        test_mode: Boolean indicating if running in test mode
+        skip_actual_upload: If True, don't actually upload to Confluence (simulation only)
+    """
+    if test_mode:
+        logging.info("Starting Confluence publishing process in TEST MODE")
+        print(f"[{datetime.now()}] TEST MODE: Publishing to test page in Confluence")
+        if not skip_actual_upload:
+            print(f"[{datetime.now()}] TEST MODE: Will attempt actual upload to test page")
+    else:
+        logging.info("Starting Confluence publishing process")
+    
+    try:
+        if not os.path.exists(report_file):
+            logging.error(f"File {report_file} not found!")
+            return False
+        
+        print(f"[{datetime.now()}] Starting Confluence publishing process...")
+        print(f"[{datetime.now()}] Loading data from {report_file}")
+        
+        # Load configuration
+        config_path = "config.json"
+        if test_mode:
+            # Use test configuration if available, otherwise use regular config
+            test_config_path = "config_test.json"
+            if os.path.exists(test_config_path):
+                config_path = test_config_path
+                print(f"[{datetime.now()}] Using test configuration: {test_config_path}")
+            else:
+                print(f"[{datetime.now()}] Test configuration not found, using regular config with test mode")
+        
+        # Check if config file exists
+        if not os.path.exists(config_path):
+            # Create a default config file
+            default_config = {
+                "CONFLUENCE_URL": "https://alm-confluence.systems.uk.hsbc/confluence/rest/api/content/",
+                "USERNAME": "45292857",
+                "AUTH_TYPE": "basic",
+                "SPACE_KEY": "DIGIBAP",
+                "PAGE_TITLE": "CIReleaseNo99",
+                "CSV_FILE": report_file,
+                "BASELINE": 1899206
+            }
+            
+            with open(config_path, 'w') as f:
+                json.dump(default_config, f, indent=4)
+            
+            print(f"[{datetime.now()}] Created default config file at {config_path}")
+            
+            if skip_actual_upload:
+                print(f"[{datetime.now()}] Skipping actual upload (simulation only)")
+                return True
+        
+        # Load the configuration
+        config = load_config(config_path)
+        if not config:
+            if skip_actual_upload:
+                print(f"[{datetime.now()}] Simulating report generation without uploading")
+                return True
+            else:
+                return False
+        
+        # Override CSV_FILE with the report_file parameter
+        config['CSV_FILE'] = report_file
+        
+        # If in test mode, modify the page title
+        if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
+            config['PAGE_TITLE'] += "-TEST"
+        
+        # Check authentication method
+        if 'AUTH_TYPE' not in config:
+            print(f"[{datetime.now()}] No AUTH_TYPE specified, defaulting to basic")
+            config['AUTH_TYPE'] = 'basic'
+        
+        # Create a session for Confluence API
+        if skip_actual_upload:
+            session = None
+            print(f"[{datetime.now()}] Skipping actual API connection (simulation only)")
+        else:
+            session = create_session(config)
+            if not session:
+                print(f"[{datetime.now()}] ERROR: Failed to create session")
+                if test_mode:
+                    print(f"[{datetime.now()}] TEST MODE: Continuing with simulation only")
+                    skip_actual_upload = True  # Force simulation mode if session creation fails
+                else:
+                    return False
+            
+        # Test connection to Confluence before proceeding
+        if not skip_actual_upload:
+            print(f"[{datetime.now()}] Testing connection to Confluence...")
+            if not test_connection(session, config):
+                print(f"[{datetime.now()}] ERROR: Could not connect to Confluence API")
+                print(f"[{datetime.now()}] Please verify your credentials and URL")
+                
+                if test_mode:
+                    print(f"[{datetime.now()}] TEST MODE: Continuing with simulation only")
+                    skip_actual_upload = True  # Force simulation mode if connection fails
+                else:
+                    return False
+            else:
+                print(f"[{datetime.now()}] Successfully connected to Confluence")
+            
+        # Load and process the CSV data
+        df, success = load_csv_data(report_file)
+        if not success:
+            if skip_actual_upload:
+                print(f"[{datetime.now()}] Simulating with sample data")
+                # Create sample data for testing
+                data = {
+                    'DATE': pd.date_range(start='2025-06-01', periods=5),
+                    'REGION': ['NA', 'EMEA', 'APAC', 'LATAM', 'NA'],
+                    'ENV': ['PROD', 'PROD', 'PROD', 'PROD', 'PROD'],
+                    'TOTAL_JOBS': [1500000, 1600000, 1700000, 1800000, 1900000]
+                }
+                df = pd.DataFrame(data)
+            else:
+                return False
+        
+        # Ensure TOTAL_JOBS is numeric
+        if 'TOTAL_JOBS' in df.columns:
+            df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
+        
+        # Display some sample data
+        print(f"[{datetime.now()}] Successfully loaded data")
+        print(f"[{datetime.now()}] File headers: {list(df.columns)}")
+        
+        print("\n=== Sample Data ===")
+        for i, row in df.head().iterrows():
+            print(f"Row {i+1}: {row.to_dict()}")
+        
+        if len(df) > 5:
+            print(f"... and {len(df)-5} more rows")
+            
+        # Get baseline from config
+        baseline = config.get('BASELINE', 1899206)
+        
+        # Generate the report content with the updated timestamp and user
+        execution_timestamp = datetime.strptime('2025-07-06 14:22:41', '%Y-%m-%d %H:%M:%S')
+        execution_user = 'satish537'
+        
+        content = f"""
+<h1>Monthly Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
+<p><strong>Last updated:</strong> {execution_timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
+<p><strong>Generated by:</strong> {execution_user}</p>
+{generate_table_and_chart(df, baseline)}
+{generate_daily_usage_by_region_chart(df)}
+{generate_baseline_variation_chart(df, baseline)}
+{generate_monthly_task_usage_chart(df)}
+{generate_region_chart(df)}
+{generate_daily_summary_table(df)}
+{generate_daily_trend_chart(df)}
+{generate_peaks_variation_table(df, baseline)}
+<hr />
+<p><em>Note: This report shows the task usage data{' (TEST MODE)' if test_mode else ''}</em></p>
+"""
+        
+        # If we're skipping actual upload
+        if skip_actual_upload:
+            print(f"[{datetime.now()}] TEST MODE: Creating test page content...")
+            print(f"[{datetime.now()}] TEST MODE: Would publish to page '{config['PAGE_TITLE']}' in space '{config['SPACE_KEY']}'")
+            print(f"[{datetime.now()}] TEST MODE: Simulated publishing only (no actual upload)")
+            logging.info("Test Confluence publishing simulated successfully")
+            return True
+        else:
+            # Regular mode or test mode with actual upload
+            print(f"[{datetime.now()}] Connecting to Confluence...")
+            print(f"[{datetime.now()}] Creating page content...")
+            print(f"[{datetime.now()}] Publishing to Confluence page '{config['PAGE_TITLE']}' in space '{config['SPACE_KEY']}'...")
+            
+            page_id, version = get_page_info(session, config)
+            success = create_or_update_page(session, config, content, page_id, version)
+            
+            if success:
+                print(f"[{datetime.now()}] SUCCESS: Data published to Confluence!")
+                logging.info("Confluence publishing completed successfully")
+                return True
+            else:
+                print(f"[{datetime.now()}] ERROR: Failed to publish to Confluence")
+                return False
+                
+    except Exception as e:
+        logging.error(f"Error in Confluence publishing: {str(e)}")
+        print(f"Error publishing to Confluence: {str(e)}")
+        return False
