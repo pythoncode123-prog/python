@@ -372,12 +372,17 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
         df_summary = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
         df_summary = df_summary.sort_values('DATE')
         
-        # Format dates for display - use MM-DD format
+        # Format dates for better readability (MM-DD format)
         df_summary['Day'] = df_summary['DATE'].dt.strftime('%m-%d')
         
-        # Generate chart data - simpler structure with just date and total jobs
+        # Generate chart rows
         chart_rows = []
         
+        # Add header row with date label and values label
+        header_row = "<tr><th>Date</th><th>Total Jobs</th></tr>"
+        chart_rows.append(header_row)
+        
+        # Add data rows
         for _, row in df_summary.iterrows():
             chart_rows.append(f"<tr><td>{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
         
@@ -385,7 +390,7 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
 <h3>Variation with Baseline Data:</h3>
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">Variation with Baseline Data:</ac:parameter>
-    <ac:parameter ac:name="type">line</ac:parameter>
+    <ac:parameter ac:name="type">area</ac:parameter>
     <ac:parameter ac:name="width">1000</ac:parameter>
     <ac:parameter ac:name="height">500</ac:parameter>
     <ac:parameter ac:name="legend">false</ac:parameter>
@@ -393,19 +398,14 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
     <ac:parameter ac:name="xLabel">Date</ac:parameter>
     <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
     <ac:parameter ac:name="color">#0047AB</ac:parameter>
-    <ac:parameter ac:name="seriesColors">#0047AB</ac:parameter>
     <ac:parameter ac:name="showShapes">true</ac:parameter>
     <ac:parameter ac:name="timeSeries">false</ac:parameter>
-    <ac:parameter ac:name="lineStyle">solid</ac:parameter>
-    <ac:parameter ac:name="lineWidth">2</ac:parameter>
+    <ac:parameter ac:name="thickness">2</ac:parameter>
     <ac:parameter ac:name="labelAngle">45</ac:parameter>
+    <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
-                <tr>
-                    <th>Date</th>
-                    <th>Total Jobs</th>
-                </tr>
                 {chr(10).join(chart_rows)}
             </tbody>
         </table>
@@ -882,7 +882,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         baseline = config.get('BASELINE', 1899206)
         
         # Generate the report content with the updated timestamp and user
-        execution_timestamp = datetime.strptime('2025-07-06 16:02:46', '%Y-%m-%d %H:%M:%S')
+        execution_timestamp = datetime.strptime('2025-07-06 16:12:14', '%Y-%m-%d %H:%M:%S')
         execution_user = 'satish537'
         
         content = f"""
