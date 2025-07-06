@@ -375,34 +375,54 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
         # Format dates for better readability (MM-DD format)
         df_summary['Day'] = df_summary['DATE'].dt.strftime('%m-%d')
         
-        # Generate chart rows
+        # Generate chart rows - use structure that will show multiple series
         chart_rows = []
         
-        # Add header row with date label and values label
-        header_row = "<tr><th>Date</th><th>Total Jobs</th></tr>"
+        # Add header row with dates
+        header_row = "<tr><th>Date</th>"
+        for _, row in df_summary.iterrows():
+            header_row += f"<th>{row['Day']}</th>"
+        header_row += "</tr>"
         chart_rows.append(header_row)
         
-        # Add data rows
+        # Add Baseline row (constant value)
+        baseline_row = "<tr><td>Baseline</td>"
+        for _ in range(len(df_summary)):
+            baseline_row += f"<td>{baseline}</td>"
+        baseline_row += "</tr>"
+        chart_rows.append(baseline_row)
+        
+        # Add Peaks row (actual data)
+        peaks_row = "<tr><td>Peaks</td>"
         for _, row in df_summary.iterrows():
-            chart_rows.append(f"<tr><td>{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>")
+            peaks_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+        peaks_row += "</tr>"
+        chart_rows.append(peaks_row)
+        
+        # Add Max Range row (constant value)
+        max_range = 2000000
+        max_row = "<tr><td>Max Range</td>"
+        for _ in range(len(df_summary)):
+            max_row += f"<td>{max_range}</td>"
+        max_row += "</tr>"
+        chart_rows.append(max_row)
         
         return f"""
 <h3>Variation with Baseline Data:</h3>
 <ac:structured-macro ac:name="chart">
     <ac:parameter ac:name="title">Variation with Baseline Data:</ac:parameter>
-    <ac:parameter ac:name="type">area</ac:parameter>
+    <ac:parameter ac:name="type">line</ac:parameter>
     <ac:parameter ac:name="width">1000</ac:parameter>
     <ac:parameter ac:name="height">500</ac:parameter>
-    <ac:parameter ac:name="legend">false</ac:parameter>
+    <ac:parameter ac:name="legend">true</ac:parameter>
     <ac:parameter ac:name="dataDisplay">false</ac:parameter>
     <ac:parameter ac:name="xLabel">Date</ac:parameter>
     <ac:parameter ac:name="yLabel">Total Jobs</ac:parameter>
-    <ac:parameter ac:name="color">#0047AB</ac:parameter>
+    <ac:parameter ac:name="colors">#6B8E23,#0047AB,#DAA520</ac:parameter>
+    <ac:parameter ac:name="seriesColors">#6B8E23,#0047AB,#DAA520</ac:parameter>
     <ac:parameter ac:name="showShapes">true</ac:parameter>
-    <ac:parameter ac:name="timeSeries">false</ac:parameter>
     <ac:parameter ac:name="thickness">2</ac:parameter>
     <ac:parameter ac:name="labelAngle">45</ac:parameter>
-    <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
     <ac:rich-text-body>
         <table>
             <tbody>
@@ -411,16 +431,6 @@ def generate_baseline_variation_chart(df: pd.DataFrame, baseline: int = 1899206)
         </table>
     </ac:rich-text-body>
 </ac:structured-macro>
-
-<table class="wrapped">
-    <tbody>
-        <tr>
-            <th>Date</th>
-            <th>Total Jobs</th>
-        </tr>
-        {"".join([f"<tr><td>{row['Day']}</td><td>{int(row['TOTAL_JOBS'])}</td></tr>" for _, row in df_summary.iterrows()])}
-    </tbody>
-</table>
 """
     except Exception as e:
         logging.error(f"Error generating baseline variation chart: {str(e)}")
@@ -882,7 +892,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv', test_mo
         baseline = config.get('BASELINE', 1899206)
         
         # Generate the report content with the updated timestamp and user
-        execution_timestamp = datetime.strptime('2025-07-06 16:12:14', '%Y-%m-%d %H:%M:%S')
+        execution_timestamp = datetime.strptime('2025-07-06 16:24:18', '%Y-%m-%d %H:%M:%S')
         execution_user = 'satish537'
         
         content = f"""
