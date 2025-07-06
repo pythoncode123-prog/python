@@ -13,12 +13,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from src.workflow import run_workflow
 from lib.secure_config import SecureConfig
+from src.publish_confluence import publish_to_confluence  # Import the new function
 
 # Configuration
 CONFIG_FILE = 'config/config.ini'
 QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
-EXECUTION_TIMESTAMP = datetime.strptime('2025-07-06 22:36:10', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
+EXECUTION_TIMESTAMP = datetime.strptime('2025-07-06 23:06:46', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
 EXECUTION_USER = 'satish537'
 
 def setup_logging():
@@ -86,18 +87,17 @@ def get_ytd_date_range():
     return start_date_str, today_str
 
 def update_query_with_date_range(query_path, start_date, end_date):
-    """Update the query.sql file with specified date range and ensure country field is included."""
+    """Update the query.sql file with specified date range."""
     try:
-        # Create a new SQL query with proper date range and country field
+        # Create a new SQL query with proper date range (without country field)
         new_query = f"""-- Query updated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by {EXECUTION_USER}
 -- Date range: {start_date} to {end_date}
 
 SELECT 
-    net_report.net_date,
-    net_report.ctm_host_name,
-    net_report_data.fvalue,
-    net_report_data.jobs,
-    net_report.country_code as COUNTRY
+    net_report.net_date as DATE,
+    net_report.ctm_host_name as REGION,
+    net_report_data.fvalue as ENV,
+    net_report_data.jobs as TOTAL_JOBS
 FROM 
     CTMHK0068.net_report,
     CTMHK0068.net_report_data
@@ -124,7 +124,6 @@ ORDER BY
             f.write(new_query)
             
         logging.info(f"Successfully created new query with date range: {start_date} to {end_date}")
-        logging.info("Added COUNTRY field and ensured proper date ordering")
         
         return True
     except Exception as e:
@@ -217,7 +216,7 @@ def main():
         logging.info("Running with monthly date range flag (for PREVIOUS month)")
         start_date, end_date, month_name = get_previous_month_date_range()
         
-        # Update SQL query with date range and add country field
+        # Update SQL query with date range (without country field)
         if not update_query_with_date_range(QUERY_FILE, start_date, end_date):
             logging.error("Failed to update query with previous month dates")
             return 1
@@ -235,7 +234,7 @@ def main():
         logging.info("Running with year-to-date range flag")
         start_date, end_date = get_ytd_date_range()
         
-        # Update SQL query with date range and add country field
+        # Update SQL query with date range (without country field)
         if not update_query_with_date_range(QUERY_FILE, start_date, end_date):
             logging.error("Failed to update query with year-to-date range")
             return 1
@@ -257,17 +256,35 @@ def main():
         print("2. Run setup_secure_config.py to encrypt your password in config.json")
         print("3. Use --no-publish flag to skip publishing")
         return 1
-regsion
-    # Run the workflow
-    run_workflow(
+
+    # Run the workflow to export data to CSV
+    workflow_result = run_workflow(
         CONFIG_FILE,
         QUERY_FILE,
         OUTPUT_CSV,
         EXECUTION_TIMESTAMP,
         EXECUTION_USER,
         test_mode=args.test,
-        publish_test=not args.no_publish  # Whether to publish in test mode
+        publish_test=False  # Skip the default publishing mechanism
     )
+    
+    # If workflow completed and publishing is enabled, use our custom publish function
+    if workflow_result and not args.no_publish and os.path.exists(OUTPUT_CSV):
+        logging.info("Publishing data to Confluence with embedded task usage graph...")
+        publish_result = publish_to_confluence(
+            OUTPUT_CSV,
+            CONFIG_FILE,
+            EXECUTION_TIMESTAMP,
+            EXECUTION_USER
+        )
+        
+        if publish_result:
+            logging.info("Successfully published data with graph to Confluence")
+        else:
+            logging.error("Failed to publish data to Confluence")
+            return 1
+    
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())
