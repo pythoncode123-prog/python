@@ -18,8 +18,8 @@ from lib.secure_config import SecureConfig
 CONFIG_FILE = 'config/config.ini'
 QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
-EXECUTION_TIMESTAMP = datetime.strptime('2025-07-06 23:55:49', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
-EXECUTION_USER = 'satish537@v10'
+EXECUTION_TIMESTAMP = datetime.strptime('2025-07-07 00:13:56', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
+EXECUTION_USER = 'satish537'
 
 def setup_logging():
     """Set up logging configuration."""
@@ -86,15 +86,15 @@ def get_ytd_date_range():
     return start_date_str, today_str
 
 def update_query_with_date_range(query_path, start_date, end_date):
-    """Update the query.sql file with specified date range."""
+    """Update the query.sql file with specified date range and REMOVE country field."""
     try:
-        # Create a new SQL query with proper date range (COUNTRY/REGION removed)
+        # Create a new SQL query with proper date range WITHOUT country field
         new_query = f"""-- Query updated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by {EXECUTION_USER}
 -- Date range: {start_date} to {end_date}
 
 SELECT 
     net_report.net_date as DATE,
-    net_report.ctm_host_name as HOST_NAME,
+    net_report.ctm_host_name as REGION,
     net_report_data.fvalue as ENV,
     net_report_data.jobs as TOTAL_JOBS
 FROM 
@@ -123,48 +123,61 @@ ORDER BY
             f.write(new_query)
             
         logging.info(f"Successfully created new query with date range: {start_date} to {end_date}")
-        logging.info("COUNTRY/REGION field removed from query")
+        logging.info("COUNTRY field removed from query")
         
         return True
     except Exception as e:
         logging.error(f"Error updating query file: {str(e)}")
         return False
 
-def update_confluence_page_title(config_path, suffix):
-    """Update the Confluence page title in the config file to include the suffix."""
+def update_confluence_page_title(config_path, suffix, is_daily=False):
+    """
+    Update the Confluence page title in the config file.
+    
+    Args:
+        config_path: Path to the config file
+        suffix: Suffix to add to the page title
+        is_daily: If True, append suffix as "_daily", otherwise use " - suffix"
+    """
     try:
         # Check if file exists
         if not os.path.exists(config_path):
             logging.error(f"Config file not found: {config_path}")
-            return None
-            
-        # Read the config file content
+            return False
+        
+        # Read the entire file content
         with open(config_path, 'r') as f:
-            config_content = f.read()
+            content = f.read()
         
-        # Look for the PAGE_TITLE line
-        page_title_pattern = r'(PAGE_TITLE\s*=\s*[\'"])(.*?)([\'"])'
+        # Use regex to find and update the PAGE_TITLE parameter
+        pattern = r'(PAGE_TITLE\s*=\s*["\'])([^"\']*?)(["\'])'
         
-        # If found, update it
-        if re.search(page_title_pattern, config_content):
-            # Extract the base title (remove any existing suffix)
-            base_title = re.search(page_title_pattern, config_content).group(2)
-            base_title = re.sub(r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$', '', base_title)
+        match = re.search(pattern, content)
+        if match:
+            # Get the current title and strip any existing suffix
+            current_title = match.group(2)
             
-            # Create the new title with suffix
-            new_title = f"{base_title} - {suffix}"
+            # Remove any existing suffix pattern (both formats)
+            base_title = re.sub(r'_daily$', '', current_title)  # Remove _daily if exists
+            base_title = re.sub(r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$', '', base_title)  # Remove month/YTD suffix
             
-            # Replace the old title with the new one
-            updated_content = re.sub(page_title_pattern, r'\1' + new_title + r'\3', config_content)
+            # Create new title with appropriate suffix format
+            if is_daily:
+                new_title = f"{base_title}_daily"
+            else:
+                new_title = f"{base_title} - {suffix}"
             
-            # Write the updated content back to the file
+            # Replace in the content
+            updated_content = re.sub(pattern, r'\1' + new_title + r'\3', content)
+            
+            # Write back to file
             with open(config_path, 'w') as f:
                 f.write(updated_content)
-            
+                
             logging.info(f"Successfully updated Confluence page title to: {new_title}")
             return True
         else:
-            logging.warning(f"PAGE_TITLE pattern not found in {config_path}")
+            logging.error(f"Could not find PAGE_TITLE parameter in {config_path}")
             return False
             
     except Exception as e:
@@ -213,8 +226,8 @@ def main():
             logging.error("Failed to update query with previous month dates")
             return 1
             
-        # Update Confluence page title with month name
-        if not update_confluence_page_title(CONFIG_FILE, month_name):
+        # Update Confluence page title with month name (NOT using _daily format)
+        if not update_confluence_page_title(CONFIG_FILE, month_name, is_daily=False):
             logging.warning("Failed to update Confluence page title. Will continue with existing title.")
         else:
             logging.info(f"Confluence page title updated to include: {month_name}")
@@ -230,11 +243,11 @@ def main():
             logging.error("Failed to update query with year-to-date range")
             return 1
             
-        # Update Confluence page title with YTD
-        if not update_confluence_page_title(CONFIG_FILE, "YTD"):
+        # Update Confluence page title with _daily suffix format
+        if not update_confluence_page_title(CONFIG_FILE, "", is_daily=True):
             logging.warning("Failed to update Confluence page title. Will continue with existing title.")
         else:
-            logging.info("Confluence page title updated to include: YTD")
+            logging.info("Confluence page title updated to append: _daily")
             
         logging.info(f"Query updated to use year-to-date range by {EXECUTION_USER}")
 
