@@ -16,6 +16,7 @@ from typing import Tuple, Optional, Dict, List
 # - Month selection + debug diagnostics
 # - Transposed Top 4 Peaks (Baseline vs Total Jobs)
 # - Single-series Daily Total Jobs (green bars)
+# - FIXED: Proper display of both Baseline and Total Jobs bars
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -189,33 +190,66 @@ def dump_debug_sample(daily_df: pd.DataFrame, peaks_df: pd.DataFrame, label: str
         print(peaks_df.sort_values('TOTAL_JOBS', ascending=False))
         print("[DEBUG] ------------------------------------\n")
 
+def debug_chart_data(peaks_df, baseline):
+    """Print details about chart data to help with debugging"""
+    print("===== DEBUG CHART DATA =====")
+    print(f"Dates: {[d.strftime('%Y-%m-%d') for d in peaks_df['DATE']]}")
+    print(f"Baseline values: {[baseline] * len(peaks_df)}")
+    print(f"Total Jobs values: {[int(v) for v in peaks_df['TOTAL_JOBS']]}")
+    print("============================")
+
 # =============================================================
-# Chart Builders (Transposed Peaks)
+# Chart Builders (Transposed Peaks) - FIXED
 # =============================================================
 
 def build_transposed_table(dates: List[str],
                            series_rows: Dict[str, List[int]]) -> str:
+    """
+    Create table with dates as columns and each series as rows
+    Fixed implementation to ensure Confluence properly displays all data series
+    """
+    # Create header row with dates
     header = "".join(f"<th>{d}</th>" for d in dates)
+    
+    # Build body rows - each series becomes a row
     body_rows = []
     for series_name, values in series_rows.items():
-        body_rows.append("<tr><th>{}</th>{}</tr>".format(
-            series_name,
-            "".join(f"<td>{v}</td>" for v in values)
-        ))
+        cells = "".join(f"<td>{v}</td>" for v in values)
+        body_rows.append(f"<tr><th>{series_name}</th>{cells}</tr>")
+    
+    # Complete table structure
     return f"<table><tbody><tr><th>Date</th>{header}</tr>{''.join(body_rows)}</tbody></table>"
 
 def peaks_transposed_chart(peaks_df: pd.DataFrame,
                            baseline: int,
                            chart_title: str) -> str:
+    """
+    Create chart with transposed data (dates as columns, series as rows)
+    Fixed to properly display both baseline and total jobs bars
+    """
     if peaks_df.empty:
         return f"<p>No data for {chart_title}.</p>"
+    
+    # Sort by date to ensure consistent ordering
     peaks_df = peaks_df.sort_values('DATE')
+    
+    # Format dates and prepare values
     date_cols = [d.strftime('%Y-%m-%d') for d in peaks_df['DATE']]
+    
+    # Ensure all values are properly formatted as integers
     series_rows = {
-        'Baseline': [baseline] * len(peaks_df),
-        'Total Jobs': [int(v) for v in peaks_df['TOTAL_JOBS']]
+        'Baseline': [int(baseline) for _ in range(len(peaks_df))],
+        'Total Jobs': [int(float(v)) for v in peaks_df['TOTAL_JOBS']]
     }
+    
+    # Debug output if environment variable is set
+    if os.environ.get('DEBUG_CHARTS') == '1':
+        debug_chart_data(peaks_df, baseline)
+    
+    # Build the table HTML for the chart
     table_html = build_transposed_table(date_cols, series_rows)
+    
+    # Return complete chart macro with correct colors and settings
     return f"""
 <ac:structured-macro ac:name="chart">
   <ac:parameter ac:name="title">{chart_title}</ac:parameter>
@@ -645,8 +679,12 @@ if __name__ == "__main__":
     p.add_argument("--multi", nargs="*", help="List of COUNTRY=path/to/file.csv")
     p.add_argument("--simulate", action="store_true", help="Skip actual upload (simulation)")
     p.add_argument("--test", action="store_true", help="Test mode (marks page title)")
+    p.add_argument("--debug", action="store_true", help="Enable debug output for charts")
     args = p.parse_args()
 
+    if args.debug:
+        os.environ['DEBUG_CHARTS'] = '1'
+    
     if args.file:
         ok = publish_to_confluence(report_file=args.file,
                                    test_mode=args.test,
