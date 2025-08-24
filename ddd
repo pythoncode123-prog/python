@@ -1,80 +1,188 @@
+#!/usr/bin/env python3
 import os
-import base64
-from cryptography.fernet import Fernet
-import logging
+import sys
+import getpass
+import configparser
+import json
+import traceback
 
-class SecureConfig:
-    KEY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "secure.key")
+# Print startup banner - this should always appear
+print("\n===== Database Password Encryption Utility =====")
+print(f"Current time: 2025-08-24 14:52:07")
+print(f"User: satish537")
+print("Initializing...\n")
+
+# Add explicit path for importing SecureConfig
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+
+try:
+    # Try to import SecureConfig
+    print("Importing secure configuration module...")
+    from lib.secure_config import SecureConfig
+    print("Import successful.")
+except ImportError as e:
+    print(f"ERROR: Could not import SecureConfig: {e}")
+    print("Make sure 'lib/secure_config.py' exists in the correct location.")
+    print("Current directory:", os.getcwd())
+    sys.exit(1)
+except Exception as e:
+    print(f"ERROR: Unexpected error during import: {e}")
+    traceback.print_exc()
+    sys.exit(1)
+
+def find_ini_files(search_dir="config"):
+    """Find all INI files in the specified directory."""
+    print(f"Looking for INI files in '{search_dir}'...")
     
-    @classmethod
-    def generate_key(cls):
-        """Generate a new Fernet key and save it to KEY_FILE."""
-        try:
-            key = Fernet.generate_key()
-            with open(cls.KEY_FILE, 'wb') as key_file:
-                key_file.write(key)
-            return key
-        except Exception as e:
-            logging.error(f"Error generating key: {str(e)}")
-            return None
-    
-    @classmethod
-    def _load_key(cls):
-        """Load the key from KEY_FILE or generate a new one if it doesn't exist."""
-        if not os.path.exists(cls.KEY_FILE):
-            return cls.generate_key()
+    if not os.path.exists(search_dir):
+        print(f"WARNING: Directory '{search_dir}' does not exist.")
+        return []
         
-        try:
-            with open(cls.KEY_FILE, 'rb') as key_file:
-                key = key_file.read()
-            # Validate key format
-            if not key or len(key) != 44 or not key.startswith(b''):
-                logging.error("Invalid key format. Regenerating...")
-                return cls.generate_key()
-            return key
-        except Exception as e:
-            logging.error(f"Error loading key: {str(e)}")
-            return None
+    ini_files = [os.path.join(search_dir, f) for f in os.listdir(search_dir) 
+                 if f.endswith('.ini') and os.path.isfile(os.path.join(search_dir, f))]
     
-    @classmethod
-    def encrypt_password(cls, password):
-        """Encrypt the password using the key from KEY_FILE."""
-        try:
-            key = cls._load_key()
-            if not key:
-                return None
-                
-            # Ensure password is bytes
-            password_bytes = password.encode() if isinstance(password, str) else password
-            
-            # Create Fernet cipher and encrypt
-            cipher = Fernet(key)
-            encrypted_password = cipher.encrypt(password_bytes)
-            
-            # Convert to string for storage
-            return encrypted_password.decode()
-        except Exception as e:
-            logging.error(f"Error encrypting password: {str(e)}")
-            return None
+    print(f"Found {len(ini_files)} INI files: {', '.join(os.path.basename(f) for f in ini_files)}")
+    return ini_files
+
+def encrypt_db_password(ini_file):
+    """Encrypt database password in an INI file."""
+    print(f"\nProcessing: {ini_file}")
     
-    @classmethod
-    def decrypt_password(cls, encrypted_password):
-        """Decrypt the password using the key from KEY_FILE."""
-        try:
-            key = cls._load_key()
-            if not key:
-                logging.error("Failed to load encryption key")
-                return None
-                
-            # Ensure encrypted_password is bytes
-            encrypted_bytes = encrypted_password.encode() if isinstance(encrypted_password, str) else encrypted_password
+    if not os.path.exists(ini_file):
+        print(f"ERROR: File not found: {ini_file}")
+        return False
+    
+    # Read the INI file
+    config = configparser.ConfigParser()
+    try:
+        config.read(ini_file)
+    except Exception as e:
+        print(f"ERROR: Failed to read INI file: {e}")
+        traceback.print_exc()
+        return False
+    
+    # Check for DATABASE section
+    if 'DATABASE' not in config:
+        print(f"ERROR: No [DATABASE] section in {ini_file}")
+        return False
+    
+    # Get username
+    username = config['DATABASE'].get('Username', 'unknown')
+    print(f"Username: {username}")
+    
+    # Get password
+    if 'Password' not in config['DATABASE']:
+        print(f"ERROR: No Password field in {ini_file}")
+        return False
+        
+    # Ask for confirmation
+    choice = input(f"Encrypt password for {username} in {os.path.basename(ini_file)}? (y/n): ")
+    if choice.lower() != 'y':
+        print("Skipping this file.")
+        return False
+    
+    # Get key
+    key_path = SecureConfig.KEY_FILE
+    if not os.path.exists(key_path):
+        print(f"Generating new encryption key at: {key_path}")
+        key = SecureConfig.generate_key()
+        if not key:
+            print("ERROR: Failed to generate key")
+            return False
+        print("Key generated successfully.")
+    else:
+        print(f"Using existing key from: {key_path}")
+    
+    # Get password
+    password = getpass.getpass(f"Enter database password for {username}: ")
+    confirm = getpass.getpass("Confirm password: ")
+    
+    if password != confirm:
+        print("ERROR: Passwords don't match!")
+        return False
+    
+    # Encrypt password
+    try:
+        print("Encrypting password...")
+        encrypted = SecureConfig.encrypt_password(password)
+        if not encrypted:
+            print("ERROR: Encryption failed!")
+            return False
+        
+        print(f"Encrypted value (first 10 chars): {encrypted[:10]}...")
+        
+        # Update config
+        config['DATABASE']['Password_Encrypted'] = encrypted
+        
+        # Write back to file
+        print(f"Updating {ini_file}...")
+        with open(ini_file, 'w') as f:
+            config.write(f)
+        
+        print(f"Successfully updated {ini_file} with encrypted password.")
+        
+        # Test decryption
+        print("Testing decryption...")
+        decrypted = SecureConfig.decrypt_password(encrypted)
+        if decrypted == password:
+            print("Decryption test SUCCESSFUL!")
+        else:
+            print("ERROR: Decryption test failed!")
+            print(f"Original: '{password}', Decrypted: '{decrypted}'")
+            return False
             
-            # Create Fernet cipher and decrypt
-            cipher = Fernet(key)
-            decrypted_password = cipher.decrypt(encrypted_bytes)
-            
-            # Convert back to string
-            return decrypted_password.decode()
-        except Exception as e:
-            logging.error(f"Error decrypting password: {str(e)}")
-            return None
+        return True
+    except Exception as e:
+        print(f"ERROR during encryption: {e}")
+        traceback.print_exc()
+        return False
+
+def main():
+    print("Starting password encryption process...")
+    
+    # Check for key file
+    key_path = SecureConfig.KEY_FILE
+    print(f"Key file path: {key_path}")
+    if os.path.exists(key_path):
+        print("Encryption key file exists.")
+    else:
+        print("Encryption key file does not exist (will be created when needed).")
+    
+    # Find INI files
+    config_dir = "config"
+    ini_files = find_ini_files(config_dir)
+    
+    if not ini_files:
+        print(f"No INI files found in '{config_dir}'. Please check the directory.")
+        return 1
+    
+    # Process each INI file
+    success_count = 0
+    for ini_file in ini_files:
+        if encrypt_db_password(ini_file):
+            success_count += 1
+    
+    # Report results
+    print("\n===== Summary =====")
+    print(f"Processed {len(ini_files)} INI files")
+    print(f"Successfully encrypted {success_count} passwords")
+    print(f"Failed to encrypt {len(ini_files) - success_count} passwords")
+    
+    if success_count > 0:
+        print("\nIMPORTANT: Keep your key file secure!")
+        print(f"Key file location: {key_path}")
+    
+    return 0
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nUnexpected error: {e}")
+        traceback.print_exc()
+        sys.exit(1)
