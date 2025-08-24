@@ -16,7 +16,7 @@ from typing import Tuple, Optional, Dict, List
 # - Month selection + debug diagnostics
 # - Transposed Top 4 Peaks (Baseline vs Total Jobs)
 # - Single-series Daily Total Jobs (green bars)
-# - FIXED: Proper display of both Baseline and Total Jobs bars
+# - FIXED: Chart display issue for both series
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -190,35 +190,9 @@ def dump_debug_sample(daily_df: pd.DataFrame, peaks_df: pd.DataFrame, label: str
         print(peaks_df.sort_values('TOTAL_JOBS', ascending=False))
         print("[DEBUG] ------------------------------------\n")
 
-def debug_chart_data(peaks_df, baseline):
-    """Print details about chart data to help with debugging"""
-    print("===== DEBUG CHART DATA =====")
-    print(f"Dates: {[d.strftime('%Y-%m-%d') for d in peaks_df['DATE']]}")
-    print(f"Baseline values: {[baseline] * len(peaks_df)}")
-    print(f"Total Jobs values: {[int(v) for v in peaks_df['TOTAL_JOBS']]}")
-    print("============================")
-
 # =============================================================
 # Chart Builders (Transposed Peaks) - FIXED
 # =============================================================
-
-def build_transposed_table(dates: List[str],
-                           series_rows: Dict[str, List[int]]) -> str:
-    """
-    Create table with dates as columns and each series as rows
-    Fixed implementation to ensure Confluence properly displays all data series
-    """
-    # Create header row with dates
-    header = "".join(f"<th>{d}</th>" for d in dates)
-    
-    # Build body rows - each series becomes a row
-    body_rows = []
-    for series_name, values in series_rows.items():
-        cells = "".join(f"<td>{v}</td>" for v in values)
-        body_rows.append(f"<tr><th>{series_name}</th>{cells}</tr>")
-    
-    # Complete table structure
-    return f"<table><tbody><tr><th>Date</th>{header}</tr>{''.join(body_rows)}</tbody></table>"
 
 def peaks_transposed_chart(peaks_df: pd.DataFrame,
                            baseline: int,
@@ -233,23 +207,32 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
     # Sort by date to ensure consistent ordering
     peaks_df = peaks_df.sort_values('DATE')
     
-    # Format dates and prepare values
-    date_cols = [d.strftime('%Y-%m-%d') for d in peaks_df['DATE']]
+    # Format dates for display (MM-DD format)
+    date_format = peaks_df['DATE'].dt.strftime('%m-%d')
     
-    # Ensure all values are properly formatted as integers
-    series_rows = {
-        'Baseline': [int(baseline) for _ in range(len(peaks_df))],
-        'Total Jobs': [int(float(v)) for v in peaks_df['TOTAL_JOBS']]
-    }
+    # Create header row with metric as first cell, then dates
+    chart_table_rows = ["<tr><th>Metric</th>"]
     
-    # Debug output if environment variable is set
-    if os.environ.get('DEBUG_CHARTS') == '1':
-        debug_chart_data(peaks_df, baseline)
+    # Add date headers
+    for date in date_format:
+        chart_table_rows[0] += f"<th>{date}</th>"
+    chart_table_rows[0] += "</tr>"
     
-    # Build the table HTML for the chart
-    table_html = build_transposed_table(date_cols, series_rows)
+    # Add Baseline row
+    baseline_row = "<tr><td>Baseline</td>"
+    for _ in range(len(peaks_df)):
+        baseline_row += f"<td>{int(baseline)}</td>"
+    baseline_row += "</tr>"
+    chart_table_rows.append(baseline_row)
     
-    # Return complete chart macro with correct colors and settings
+    # Add Total Jobs row
+    jobs_row = "<tr><td>Total Jobs</td>"
+    for _, row in peaks_df.iterrows():
+        jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+    jobs_row += "</tr>"
+    chart_table_rows.append(jobs_row)
+    
+    # Return complete chart macro with correct settings
     return f"""
 <ac:structured-macro ac:name="chart">
   <ac:parameter ac:name="title">{chart_title}</ac:parameter>
@@ -270,7 +253,11 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
   <ac:parameter ac:name="colors">#B22222,#6B8E23</ac:parameter>
   <ac:parameter ac:name="seriesColors">#B22222,#6B8E23</ac:parameter>
   <ac:rich-text-body>
-    {table_html}
+    <table>
+      <tbody>
+        {"".join(chart_table_rows)}
+      </tbody>
+    </table>
   </ac:rich-text-body>
 </ac:structured-macro>
 """
@@ -642,8 +629,8 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
                 per_country_sections.append(f"<h3>{ctry}</h3>")
                 per_country_sections.append(generate_country_peaks_section(df_ctry, ctry, baseline))
 
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-        user = 'satish537'
+        timestamp = "2025-08-24 12:42:22"  # From user's request
+        user = 'satish537'  # From user's request
         content = f"""
 <h1>Multi-Country Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
@@ -683,8 +670,8 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     if args.debug:
-        os.environ['DEBUG_CHARTS'] = '1'
-    
+        os.environ['DEBUG_PEAKS'] = '1'
+        
     if args.file:
         ok = publish_to_confluence(report_file=args.file,
                                    test_mode=args.test,
