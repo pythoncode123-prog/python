@@ -22,6 +22,7 @@ OUTPUT_CSV = 'data.csv'
 EXECUTION_TIMESTAMP = datetime.strptime('2025-07-07 00:13:56', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
 EXECUTION_USER = 'satish537'
 
+
 def setup_logging():
     """Set up logging configuration."""
     log_file = f"workflow_{EXECUTION_TIMESTAMP.strftime('%Y%m%d_%H%M%S')}.log"
@@ -33,6 +34,7 @@ def setup_logging():
             logging.StreamHandler()
         ]
     )
+
 
 def check_password_available():
     """Check if password is available either in environment or as encrypted in config."""
@@ -53,13 +55,17 @@ def check_password_available():
             pass
     return False
 
+
 def get_previous_month_date_range():
     """Get the start and end date of the previous month."""
     today = datetime.now()
+
     # Calculate first day of current month
     first_day_of_current_month = datetime(today.year, today.month, 1)
+
     # Calculate last day of previous month (one day before first day of current month)
     last_day_of_previous_month = first_day_of_current_month - timedelta(days=1)
+
     # Calculate first day of previous month
     first_day_of_previous_month = datetime(last_day_of_previous_month.year, last_day_of_previous_month.month, 1)
 
@@ -72,6 +78,7 @@ def get_previous_month_date_range():
     logging.info(f"Previous month date range: {start_date_str} to {end_date_str} ({month_name})")
     return start_date_str, end_date_str, month_name
 
+
 def get_ytd_date_range():
     """Get the date range from start of current year to today."""
     today = datetime.now()
@@ -81,8 +88,9 @@ def get_ytd_date_range():
     logging.info(f"YTD date range: {start_date_str} to {end_date_str}")
     return start_date_str, end_date_str
 
+
 def update_query_with_date_range(query_path, start_date, end_date):
-    """Update or create the query.sql file with specified date range and REMOVE country field."""
+    """Update the query.sql file with specified date range and REMOVE country field."""
     try:
         # Create a new SQL query with proper date range WITHOUT country field
         new_query = f"""-- Query updated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by {EXECUTION_USER}
@@ -105,7 +113,7 @@ WHERE
 ORDER BY
     net_report.net_date ASC;
 """
-        # Create a backup of the original query first (only if path exists and file exists)
+        # Create a backup of the original query first
         backup_path = f"{query_path}.bak"
         if os.path.exists(query_path):
             with open(query_path, 'r') as f:
@@ -114,8 +122,10 @@ ORDER BY
                 f.write(original_query)
             logging.info(f"Created backup of original query at {backup_path}")
 
-        # Ensure parent dir exists
-        os.makedirs(os.path.dirname(query_path) or ".", exist_ok=True)
+        # Ensure directory exists
+        parent = os.path.dirname(query_path)
+        if parent and not os.path.exists(parent):
+            os.makedirs(parent, exist_ok=True)
 
         # Write the new query
         with open(query_path, 'w') as f:
@@ -129,9 +139,11 @@ ORDER BY
         logging.error(f"Error updating query file: {str(e)}")
         return False
 
+
 def update_confluence_page_title(config_path, suffix, is_daily=False):
     """
-    Update the Confluence page title in the config file (INI).
+    Update the Confluence page title in the config file.
+
     Args:
         config_path: Path to the config file
         suffix: Suffix to add to the page title
@@ -157,7 +169,10 @@ def update_confluence_page_title(config_path, suffix, is_daily=False):
 
             # Remove any existing suffix pattern (both formats)
             base_title = re.sub(r'_daily$', '', current_title)  # Remove _daily if exists
-            base_title = re.sub(r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$', '', base_title)  # Remove month/YTD suffix
+            base_title = re.sub(
+                r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$',
+                '', base_title
+            )  # Remove month/YTD suffix
 
             # Create new title with appropriate suffix format
             if is_daily:
@@ -182,8 +197,10 @@ def update_confluence_page_title(config_path, suffix, is_daily=False):
         logging.error(f"Error updating Confluence page title: {str(e)}")
         return False
 
+
 def main():
     """Main entry point."""
+    # Parse command line arguments
     parser = argparse.ArgumentParser(description="Run data workflow")
     parser.add_argument("--test", action="store_true", help="Run in test mode using predefined test CSV")
     parser.add_argument("--no-publish", action="store_true", help="Skip actual publishing to Confluence")
@@ -198,7 +215,7 @@ def main():
     # Create config directory if it doesn't exist
     os.makedirs('config', exist_ok=True)
 
-    # If not in test mode and not multi-country, check if default config files exist
+    # If not in test mode and not multi-country, check if config files exist
     if not args.test and not args.countries_config:
         if not os.path.exists(CONFIG_FILE):
             logging.error(f"Config file {CONFIG_FILE} not found.")
@@ -208,22 +225,23 @@ def main():
             logging.error(f"Query file {QUERY_FILE} not found.")
             return 1
 
+    # Handle date range flags (monthly and daily)
     # Ensure only one flag is used
     if args.monthly and args.daily:
         logging.error("Cannot use both --monthly and --daily flags together. Please choose one.")
         return 1
 
-    # Determine date range for this run (reused for single and multi flows)
+    # Determine date range for this run (for single and multi flows)
     date_range = None
     month_name = None
     if args.monthly:
         logging.info("Running with monthly date range flag (for PREVIOUS month)")
-        sd, ed, month_name = get_previous_month_date_range()
-        date_range = (sd, ed, month_name)
+        start_date, end_date, month_name = get_previous_month_date_range()
+        date_range = (start_date, end_date, month_name)
     elif args.daily:
         logging.info("Running with year-to-date range flag")
-        sd, ed = get_ytd_date_range()
-        date_range = (sd, ed, None)
+        start_date, end_date = get_ytd_date_range()
+        date_range = (start_date, end_date, None)
 
     # Check for password availability if publishing
     if not args.no_publish and not check_password_available():
@@ -236,7 +254,7 @@ def main():
 
     # Multi-country flow
     if args.countries_config:
-        # Load countries definition
+        # Load countries
         try:
             with open(args.countries_config, "r") as f:
                 countries_cfg = json.load(f)
@@ -248,7 +266,7 @@ def main():
             logging.error(f"Failed to read countries config: {e}")
             return 1
 
-        # Prepare per-country query files (with date range if provided)
+        # Prepare per-country configs
         prepared = []
         for c in countries:
             name = c.get("name")
@@ -265,7 +283,7 @@ def main():
                 logging.error(f"Query file for {name} not found: {qry_path}")
                 return 1
 
-            # Create a temp per-country query if date range specified, else use given query
+            # If date_range specified, create a temp query file with updated dates
             if date_range:
                 sd, ed, _ = date_range
                 tmp_qry = os.path.join(tempfile.gettempdir(), f"query_{name}.sql")
@@ -276,7 +294,7 @@ def main():
             else:
                 prepared.append({"name": name, "config_file": cfg_path, "query_file": qry_path})
 
-        # Update Confluence page title (INI) once based on flags (optional - matches existing behavior)
+        # Update Confluence page title based on flags (optional, applies to one page)
         if args.monthly and month_name:
             update_confluence_page_title(CONFIG_FILE, month_name, is_daily=False)
         elif args.daily:
@@ -290,17 +308,19 @@ def main():
             execution_timestamp=EXECUTION_TIMESTAMP,
             execution_user=EXECUTION_USER,
             test_mode=args.test,
-            publish=not args.no_publish
+            publish_test=not args.no_publish  # Whether to publish in test mode
         )
         return 0 if result else 1
 
-    # Single-country flow (existing)
+    # Single-country flow
     if args.monthly:
         sd, ed, month_name = date_range
+        # Update SQL query with date range
         if not update_query_with_date_range(QUERY_FILE, sd, ed):
             logging.error("Failed to update query with previous month dates")
             return 1
 
+        # Update Confluence page title with month name (NOT using _daily format)
         if not update_confluence_page_title(CONFIG_FILE, month_name, is_daily=False):
             logging.warning("Failed to update Confluence page title. Will continue with existing title.")
         else:
@@ -310,10 +330,12 @@ def main():
 
     elif args.daily:
         sd, ed, _ = date_range
+        # Update SQL query with date range
         if not update_query_with_date_range(QUERY_FILE, sd, ed):
             logging.error("Failed to update query with year-to-date range")
             return 1
 
+        # Update Confluence page title with _daily suffix format
         if not update_confluence_page_title(CONFIG_FILE, "", is_daily=True):
             logging.warning("Failed to update Confluence page title. Will continue with existing title.")
         else:
@@ -333,6 +355,7 @@ def main():
     )
 
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
