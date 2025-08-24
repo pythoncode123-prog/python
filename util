@@ -20,7 +20,7 @@ def load_config(config_path):
     db_config = config['DATABASE']
     
     # Try to get encrypted password if available
-    password = db_config['Password']
+    password = db_config.get('Password', '')
     if HAS_SECURE_CONFIG and 'Password_Encrypted' in db_config:
         try:
             decrypted_password = SecureConfig.decrypt_password(db_config['Password_Encrypted'])
@@ -32,11 +32,11 @@ def load_config(config_path):
             logging.warning("Falling back to plain text password")
     
     return {
-        'host': db_config['DBHost'],
-        'port': db_config['Port'],
-        'service': db_config['ServiceName'],
-        'schema': db_config['SchemaName'],
-        'user': db_config['Username'],
+        'host': db_config.get('DBHost', ''),
+        'port': db_config.get('Port', '1521'),
+        'service': db_config.get('ServiceName', ''),
+        'schema': db_config.get('SchemaName', ''),
+        'user': db_config.get('Username', ''),
         'password': password
     }
 
