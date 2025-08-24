@@ -15,72 +15,53 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from src.workflow import run_workflow
 from lib.secure_config import SecureConfig
 
-# Configuration
+# Database / legacy single-country config (INI used for DB connection)
 CONFIG_FILE = 'config/config.ini'
+# New: authoritative Confluence title source (JSON)
+TITLE_CONFIG_FILE = 'config.json'
+
 QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
-EXECUTION_TIMESTAMP = datetime.strptime('2025-07-07 00:13:56', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
+EXECUTION_TIMESTAMP = datetime.strptime('2025-07-07 00:13:56', '%Y-%m-%d %H:%M:%S')
 EXECUTION_USER = 'satish537'
 
 
 def setup_logging():
-    """Set up logging configuration."""
     log_file = f"workflow_{EXECUTION_TIMESTAMP.strftime('%Y%m%d_%H%M%S')}.log"
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
+        handlers=[logging.FileHandler(log_file), logging.StreamHandler()]
     )
 
 
 def check_password_available():
-    """Check if password is available either in environment or as encrypted in config."""
-    # Check environment variable first
     if os.environ.get('CONFLUENCE_PASSWORD'):
         return True
-
-    # Check for encrypted password in config
     if os.path.exists("config.json"):
         try:
             with open("config.json", 'r') as f:
                 config = json.load(f)
-            if 'PASSWORD_ENCRYPTED' in config:
-                # Check if key file exists
-                if os.path.exists(SecureConfig.KEY_FILE):
-                    return True
+            if 'PASSWORD_ENCRYPTED' in config and os.path.exists(SecureConfig.KEY_FILE):
+                return True
         except Exception:
             pass
     return False
 
 
 def get_previous_month_date_range():
-    """Get the start and end date of the previous month."""
     today = datetime.now()
-
-    # Calculate first day of current month
-    first_day_of_current_month = datetime(today.year, today.month, 1)
-
-    # Calculate last day of previous month (one day before first day of current month)
-    last_day_of_previous_month = first_day_of_current_month - timedelta(days=1)
-
-    # Calculate first day of previous month
-    first_day_of_previous_month = datetime(last_day_of_previous_month.year, last_day_of_previous_month.month, 1)
-
-    start_date_str = first_day_of_previous_month.strftime('%Y-%m-%d 00:00:00')
-    end_date_str = last_day_of_previous_month.strftime('%Y-%m-%d 23:59:59')
-
-    # Get month name for Confluence page
-    month_name = calendar.month_name[last_day_of_previous_month.month]
-
+    first_day_current = datetime(today.year, today.month, 1)
+    last_day_prev = first_day_current - timedelta(days=1)
+    first_day_prev = datetime(last_day_prev.year, last_day_prev.month, 1)
+    start_date_str = first_day_prev.strftime('%Y-%m-%d 00:00:00')
+    end_date_str = last_day_prev.strftime('%Y-%m-%d 23:59:59')
+    month_name = calendar.month_name[last_day_prev.month]
     logging.info(f"Previous month date range: {start_date_str} to {end_date_str} ({month_name})")
     return start_date_str, end_date_str, month_name
 
 
 def get_ytd_date_range():
-    """Get the date range from start of current year to today."""
     today = datetime.now()
     start_of_year = datetime(today.year, 1, 1)
     start_date_str = start_of_year.strftime('%Y-%m-%d 00:00:00')
@@ -90,9 +71,7 @@ def get_ytd_date_range():
 
 
 def update_query_with_date_range(query_path, start_date, end_date):
-    """Update the query.sql file with specified date range and REMOVE country field."""
     try:
-        # Create a new SQL query with proper date range WITHOUT country field
         new_query = f"""-- Query updated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by {EXECUTION_USER}
 -- Date range: {start_date} to {end_date}
 
@@ -113,7 +92,6 @@ WHERE
 ORDER BY
     net_report.net_date ASC;
 """
-        # Create a backup of the original query first
         backup_path = f"{query_path}.bak"
         if os.path.exists(query_path):
             with open(query_path, 'r') as f:
@@ -122,18 +100,15 @@ ORDER BY
                 f.write(original_query)
             logging.info(f"Created backup of original query at {backup_path}")
 
-        # Ensure directory exists
         parent = os.path.dirname(query_path)
         if parent and not os.path.exists(parent):
             os.makedirs(parent, exist_ok=True)
 
-        # Write the new query
         with open(query_path, 'w') as f:
             f.write(new_query)
 
         logging.info(f"Successfully created new query with date range: {start_date} to {end_date}")
         logging.info("COUNTRY field removed from query")
-
         return True
     except Exception as e:
         logging.error(f"Error updating query file: {str(e)}")
@@ -142,56 +117,96 @@ ORDER BY
 
 def update_confluence_page_title(config_path, suffix, is_daily=False):
     """
-    Update the Confluence page title in the config file.
-
-    Args:
-        config_path: Path to the config file
-        suffix: Suffix to add to the page title
-        is_daily: If True, append suffix as "_daily", otherwise use " - suffix"
+    Update PAGE_TITLE for Confluence in JSON (preferred) or INI.
+    Logic:
+      - Strip trailing _daily
+      - Strip trailing " - <MonthName>" (or YTD)
+      - Append _daily if is_daily else " - <suffix>"
     """
+    import re, configparser
     try:
-        # Check if file exists
         if not os.path.exists(config_path):
             logging.error(f"Config file not found: {config_path}")
             return False
 
-        # Read the entire file content
-        with open(config_path, 'r') as f:
-            content = f.read()
+        # JSON path
+        if config_path.endswith('.json'):
+            try:
+                with open(config_path, 'r') as f:
+                    data = json.load(f)
+            except Exception as e:
+                logging.error(f"Failed reading JSON config {config_path}: {e}")
+                return False
 
-        # Use regex to find and update the PAGE_TITLE parameter
-        pattern = r'(PAGE_TITLE\s*=\s*["\'])([^"\']*?)(["\'])'
+            if 'PAGE_TITLE' not in data:
+                logging.error(f"PAGE_TITLE key not found in JSON {config_path}")
+                return False
 
-        match = re.search(pattern, content)
-        if match:
-            # Get the current title and strip any existing suffix
-            current_title = match.group(2)
-
-            # Remove any existing suffix pattern (both formats)
-            base_title = re.sub(r'_daily$', '', current_title)  # Remove _daily if exists
-            base_title = re.sub(
+            base = data['PAGE_TITLE']
+            base = re.sub(r'_daily$', '', base)
+            base = re.sub(
                 r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$',
-                '', base_title
-            )  # Remove month/YTD suffix
-
-            # Create new title with appropriate suffix format
+                '', base
+            )
             if is_daily:
-                new_title = f"{base_title}_daily"
+                new_title = f"{base}_daily"
             else:
-                new_title = f"{base_title} - {suffix}"
+                new_title = f"{base} - {suffix}"
 
-            # Replace in the content
-            updated_content = re.sub(pattern, r'\1' + new_title + r'\3', content)
+            data['PAGE_TITLE'] = new_title
+            try:
+                with open(config_path, 'w') as f:
+                    json.dump(data, f, indent=4)
+            except Exception as e:
+                logging.error(f"Failed writing JSON config {config_path}: {e}")
+                return False
 
-            # Write back to file
-            with open(config_path, 'w') as f:
-                f.write(updated_content)
-
-            logging.info(f"Successfully updated Confluence page title to: {new_title}")
+            logging.info(f"Successfully updated Confluence PAGE_TITLE in JSON to: {new_title}")
             return True
+
+        # INI fallback (kept for completeness)
+        cp = configparser.ConfigParser()
+        cp.optionxform = str
+        with open(config_path, 'r') as f:
+            raw = f.read()
+
+        # Attempt parse (add dummy section if none)
+        if '[' not in raw.splitlines()[0]:
+            temp_raw = "[DEFAULT]\n" + raw
         else:
-            logging.error(f"Could not find PAGE_TITLE parameter in {config_path}")
-            return False
+            temp_raw = raw
+        cp.read_string(temp_raw)
+
+        target_sections = cp.sections() if cp.sections() else ['DEFAULT']
+        updated = False
+        for sec in target_sections:
+            if 'PAGE_TITLE' in cp[sec]:
+                current = cp[sec]['PAGE_TITLE'].strip().strip('"\'')
+                base = re.sub(r'_daily$', '', current)
+                base = re.sub(
+                    r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$',
+                    '', base
+                )
+                new_title = f"{base}_daily" if is_daily else f"{base} - {suffix}"
+                cp[sec]['PAGE_TITLE'] = new_title
+                updated = True
+                break
+
+        if updated:
+            with open(config_path, 'w') as f:
+                if target_sections == ['DEFAULT']:
+                    for k, v in cp['DEFAULT'].items():
+                        if k == 'PAGE_TITLE':
+                            f.write(f'PAGE_TITLE = "{v}"\n')
+                        else:
+                            f.write(f'{k} = {v}\n')
+                else:
+                    cp.write(f)
+            logging.info(f"Successfully updated Confluence PAGE_TITLE in INI to: {new_title}")
+            return True
+
+        logging.error(f"Could not find PAGE_TITLE in {config_path}")
+        return False
 
     except Exception as e:
         logging.error(f"Error updating Confluence page title: {str(e)}")
@@ -199,8 +214,6 @@ def update_confluence_page_title(config_path, suffix, is_daily=False):
 
 
 def main():
-    """Main entry point."""
-    # Parse command line arguments
     parser = argparse.ArgumentParser(description="Run data workflow")
     parser.add_argument("--test", action="store_true", help="Run in test mode using predefined test CSV")
     parser.add_argument("--no-publish", action="store_true", help="Skip actual publishing to Confluence")
@@ -209,52 +222,40 @@ def main():
     parser.add_argument("--countries-config", help="Path to countries JSON to run multi-country workflow")
     args = parser.parse_args()
 
-    # Setup logging
     setup_logging()
-
-    # Create config directory if it doesn't exist
     os.makedirs('config', exist_ok=True)
 
-    # If not in test mode and not multi-country, check if config files exist
+    # Basic presence checks for single-country DB files if not test & not multi
     if not args.test and not args.countries_config:
         if not os.path.exists(CONFIG_FILE):
             logging.error(f"Config file {CONFIG_FILE} not found.")
             return 1
-
         if not os.path.exists(QUERY_FILE):
             logging.error(f"Query file {QUERY_FILE} not found.")
             return 1
 
-    # Handle date range flags (monthly and daily)
-    # Ensure only one flag is used
     if args.monthly and args.daily:
-        logging.error("Cannot use both --monthly and --daily flags together. Please choose one.")
+        logging.error("Cannot use both --monthly and --daily flags together.")
         return 1
 
-    # Determine date range for this run (for single and multi flows)
     date_range = None
     month_name = None
     if args.monthly:
-        logging.info("Running with monthly date range flag (for PREVIOUS month)")
-        start_date, end_date, month_name = get_previous_month_date_range()
-        date_range = (start_date, end_date, month_name)
+        sd, ed, month_name = get_previous_month_date_range()
+        date_range = (sd, ed, month_name)
     elif args.daily:
-        logging.info("Running with year-to-date range flag")
-        start_date, end_date = get_ytd_date_range()
-        date_range = (start_date, end_date, None)
+        sd, ed = get_ytd_date_range()
+        date_range = (sd, ed, None)
 
-    # Check for password availability if publishing
     if not args.no_publish and not check_password_available():
         print("No Confluence authentication credentials found.")
-        print("Please either:")
-        print("1. Set CONFLUENCE_PASSWORD environment variable")
-        print("2. Run setup_secure_config.py to encrypt your password in config.json")
-        print("3. Use --no-publish flag to skip publishing")
+        print("1. Set CONFLUENCE_PASSWORD env var")
+        print("2. Or run setup_secure_config.py to create encrypted config.json")
+        print("3. Or use --no-publish to skip publishing")
         return 1
 
     # Multi-country flow
     if args.countries_config:
-        # Load countries
         try:
             with open(args.countries_config, "r") as f:
                 countries_cfg = json.load(f)
@@ -266,7 +267,6 @@ def main():
             logging.error(f"Failed to read countries config: {e}")
             return 1
 
-        # Prepare per-country configs
         prepared = []
         for c in countries:
             name = c.get("name")
@@ -275,7 +275,6 @@ def main():
             if not name or not cfg_path:
                 logging.error("Each country must have 'name' and 'config_file'")
                 return 1
-
             if not args.test and not os.path.exists(cfg_path):
                 logging.error(f"Config file for {name} not found: {cfg_path}")
                 return 1
@@ -283,7 +282,6 @@ def main():
                 logging.error(f"Query file for {name} not found: {qry_path}")
                 return 1
 
-            # If date_range specified, create a temp query file with updated dates
             if date_range:
                 sd, ed, _ = date_range
                 tmp_qry = os.path.join(tempfile.gettempdir(), f"query_{name}.sql")
@@ -294,13 +292,12 @@ def main():
             else:
                 prepared.append({"name": name, "config_file": cfg_path, "query_file": qry_path})
 
-        # Update Confluence page title based on flags (optional, applies to one page)
+        # Update title ONCE (global JSON) not per country
         if args.monthly and month_name:
-            update_confluence_page_title(CONFIG_FILE, month_name, is_daily=False)
+            update_confluence_page_title(TITLE_CONFIG_FILE, month_name, is_daily=False)
         elif args.daily:
-            update_confluence_page_title(CONFIG_FILE, "", is_daily=True)
+            update_confluence_page_title(TITLE_CONFIG_FILE, "", is_daily=True)
 
-        # Execute multi-country workflow
         from src.workflow import run_workflow_multi
         result = run_workflow_multi(
             countries=prepared,
@@ -308,42 +305,33 @@ def main():
             execution_timestamp=EXECUTION_TIMESTAMP,
             execution_user=EXECUTION_USER,
             test_mode=args.test,
-            publish_test=not args.no_publish  # Whether to publish in test mode
+            publish_test=not args.no_publish
         )
         return 0 if result else 1
 
     # Single-country flow
     if args.monthly:
         sd, ed, month_name = date_range
-        # Update SQL query with date range
         if not update_query_with_date_range(QUERY_FILE, sd, ed):
             logging.error("Failed to update query with previous month dates")
             return 1
-
-        # Update Confluence page title with month name (NOT using _daily format)
-        if not update_confluence_page_title(CONFIG_FILE, month_name, is_daily=False):
-            logging.warning("Failed to update Confluence page title. Will continue with existing title.")
+        if not update_confluence_page_title(TITLE_CONFIG_FILE, month_name, is_daily=False):
+            logging.warning("Failed to update Confluence page title (JSON).")
         else:
             logging.info(f"Confluence page title updated to include: {month_name}")
-
         logging.info(f"Query updated to use {month_name} date range by {EXECUTION_USER}")
 
     elif args.daily:
         sd, ed, _ = date_range
-        # Update SQL query with date range
         if not update_query_with_date_range(QUERY_FILE, sd, ed):
             logging.error("Failed to update query with year-to-date range")
             return 1
-
-        # Update Confluence page title with _daily suffix format
-        if not update_confluence_page_title(CONFIG_FILE, "", is_daily=True):
-            logging.warning("Failed to update Confluence page title. Will continue with existing title.")
+        if not update_confluence_page_title(TITLE_CONFIG_FILE, "", is_daily=True):
+            logging.warning("Failed to update Confluence page title (JSON).")
         else:
             logging.info("Confluence page title updated to append: _daily")
-
         logging.info(f"Query updated to use year-to-date range by {EXECUTION_USER}")
 
-    # Run the workflow
     run_workflow(
         CONFIG_FILE,
         QUERY_FILE,
@@ -351,9 +339,8 @@ def main():
         EXECUTION_TIMESTAMP,
         EXECUTION_USER,
         test_mode=args.test,
-        publish_test=not args.no_publish  # Whether to publish in test mode
+        publish_test=not args.no_publish
     )
-
     return 0
 
 
