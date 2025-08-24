@@ -5,9 +5,30 @@ import getpass
 import argparse
 import json
 import configparser
+import datetime
 from lib.secure_config import SecureConfig
 
-def encrypt_confluence_password(password, config_file="config.json"):
+def get_ini_files(base_dir="config", pattern="db_*.ini"):
+    """Find all DB INI files in the config directory."""
+    import glob
+    search_path = os.path.join(base_dir, pattern)
+    return glob.glob(search_path)
+
+def read_username_from_ini(ini_file):
+    """Extract username from the INI file."""
+    if not os.path.exists(ini_file):
+        return None
+    
+    config = configparser.ConfigParser()
+    try:
+        config.read(ini_file)
+        if 'DATABASE' in config and 'Username' in config['DATABASE']:
+            return config['DATABASE']['Username']
+    except Exception:
+        pass
+    return None
+
+def encrypt_confluence_password(username, password, config_file="config.json"):
     """Encrypt Confluence password and save to JSON config file."""
     # Load or create config
     config = {}
@@ -22,7 +43,7 @@ def encrypt_confluence_password(password, config_file="config.json"):
         # Create default config
         config = {
             "CONFLUENCE_URL": "https://alm-confluence.systems.uk.hsbc/confluence/rest/api/content/",
-            "USERNAME": "45292857",
+            "USERNAME": username,
             "AUTH_TYPE": "basic",
             "SPACE_KEY": "DIGIBAP",
             "PAGE_TITLE": "CIReleaseNote9",
@@ -30,7 +51,7 @@ def encrypt_confluence_password(password, config_file="config.json"):
         }
     
     # Encrypt password and update config
-    print("Encrypting Confluence password...")
+    print(f"Encrypting Confluence password for {username}...")
     encrypted_password = SecureConfig.encrypt_password(password)
     if not encrypted_password:
         print("Failed to encrypt password!")
@@ -50,27 +71,27 @@ def encrypt_confluence_password(password, config_file="config.json"):
     print(f"\nConfluence password encrypted and saved to {config_file}")
     return True
 
-def encrypt_db_password(password, ini_file="config/config.ini"):
+def encrypt_db_password(username, password, ini_file):
     """Encrypt database password and save to INI config file."""
-    # Load or create config
+    # Load config
     config = configparser.ConfigParser()
-    if os.path.exists(ini_file):
-        try:
-            config.read(ini_file)
-        except Exception as e:
-            print(f"Error loading INI file: {str(e)}")
-            return False
-    else:
+    if not os.path.exists(ini_file):
         print(f"INI file not found: {ini_file}")
+        return False
+    
+    try:
+        config.read(ini_file)
+    except Exception as e:
+        print(f"Error loading INI file: {str(e)}")
         return False
     
     # Check if DATABASE section exists
     if 'DATABASE' not in config:
-        print("Warning: 'DATABASE' section not found in INI file.")
-        config['DATABASE'] = {}
+        print("Error: 'DATABASE' section not found in INI file.")
+        return False
     
     # Encrypt password and update config
-    print("Encrypting database password...")
+    print(f"Encrypting database password for {username} in {os.path.basename(ini_file)}...")
     encrypted_password = SecureConfig.encrypt_password(password)
     if not encrypted_password:
         print("Failed to encrypt password!")
@@ -80,34 +101,40 @@ def encrypt_db_password(password, ini_file="config/config.ini"):
     config['DATABASE']['Password_Encrypted'] = encrypted_password
     
     # Keep the original password field if needed for backward compatibility
-    # If there's no Password field, add it with a placeholder
     if 'Password' not in config['DATABASE']:
         config['DATABASE']['Password'] = '[ENCRYPTED - See Password_Encrypted]'
     
     # Save config
     try:
-        os.makedirs(os.path.dirname(ini_file), exist_ok=True)
         with open(ini_file, 'w') as f:
             config.write(f)
     except Exception as e:
         print(f"Error saving INI file: {str(e)}")
         return False
     
-    print(f"\nDatabase password encrypted and saved to {ini_file}")
+    print(f"Database password encrypted and saved to {ini_file}")
     return True
 
 def main():
     parser = argparse.ArgumentParser(description="Setup secure configuration with encrypted password")
-    parser.add_argument("--password", help="Password to encrypt (not recommended, use interactive prompt instead)")
-    parser.add_argument("--json", "--config", dest="json_file", help="JSON config file path (default: config.json)", default="config.json")
-    parser.add_argument("--ini", "--db", dest="ini_file", help="INI config file path (default: config/config.ini)", default="config/config.ini")
-    parser.add_argument("--type", choices=["confluence", "db", "both"], default="confluence", 
-                      help="Type of password to encrypt: confluence, db, or both (default: confluence)")
+    parser.add_argument("--confluence", action="store_true", help="Encrypt Confluence password")
+    parser.add_argument("--db", action="store_true", help="Encrypt database passwords")
+    parser.add_argument("--json", dest="json_file", help="JSON config file path (default: config.json)", default="config.json")
+    parser.add_argument("--config-dir", help="Directory with DB INI files (default: config)", default="config")
+    parser.add_argument("--skip-prompt", action="store_true", help="Skip password prompt if already encrypted")
     args = parser.parse_args()
 
+    # If no specific flags, default to both
+    if not (args.confluence or args.db):
+        args.confluence = True
+        args.db = True
+
+    timestamp = "2025-08-24 14:05:50"  # Current timestamp provided
+    username = "satish537"  # Current username provided
+
     print("\n=== Secure Configuration Setup ===")
-    print(f"Current time: 2025-08-24 13:57:19")
-    print(f"User: satish537")
+    print(f"Current time: {timestamp}")
+    print(f"User: {username}")
     
     # Generate key if it doesn't exist
     if not os.path.exists(SecureConfig.KEY_FILE):
@@ -116,52 +143,91 @@ def main():
         if not key:
             print("Failed to generate encryption key!")
             return 1
-    
-    # Get password
-    if args.password:
-        password = args.password
-        print("WARNING: Providing password on command line is not secure!")
-    else:
-        if args.type == "both":
-            # Need to get two different passwords
-            conf_password = getpass.getpass("Enter Confluence password: ")
-            confirm = getpass.getpass("Confirm Confluence password: ")
-            if conf_password != confirm:
-                print("Confluence passwords do not match!")
-                return 1
+
+    # Handle Confluence password
+    if args.confluence:
+        # Check if already encrypted
+        is_encrypted = False
+        if os.path.exists(args.json_file):
+            try:
+                with open(args.json_file, 'r') as f:
+                    config = json.load(f)
+                    if 'PASSWORD_ENCRYPTED' in config:
+                        is_encrypted = True
+            except Exception:
+                pass
+        
+        if is_encrypted and args.skip_prompt:
+            print("Confluence password already encrypted. Skipping due to --skip-prompt.")
+        else:
+            # Get username from config if possible
+            conf_username = username
+            if os.path.exists(args.json_file):
+                try:
+                    with open(args.json_file, 'r') as f:
+                        config = json.load(f)
+                        if 'USERNAME' in config:
+                            conf_username = config['USERNAME']
+                except Exception:
+                    pass
+            
+            print(f"\nEncrypting Confluence password for {conf_username}")
+            choice = input("Continue? (y/n): ").strip().lower()
+            if choice == 'y':
+                password = getpass.getpass(f"Enter Confluence password for {conf_username}: ")
+                confirm = getpass.getpass("Confirm password: ")
+                if password != confirm:
+                    print("Passwords do not match!")
+                    return 1
                 
-            db_password = getpass.getpass("Enter Database password: ")
-            confirm = getpass.getpass("Confirm Database password: ")
-            if db_password != confirm:
-                print("Database passwords do not match!")
-                return 1
-        else:
-            password_type = "Confluence" if args.type == "confluence" else "Database"
-            password = getpass.getpass(f"Enter {password_type} password: ")
-            confirm = getpass.getpass(f"Confirm {password_type} password: ")
-            if password != confirm:
-                print("Passwords do not match!")
-                return 1
+                if not encrypt_confluence_password(conf_username, password, args.json_file):
+                    return 1
+            else:
+                print("Skipping Confluence password encryption.")
+
+    # Handle DB passwords
+    if args.db:
+        # Find DB INI files
+        ini_files = get_ini_files(args.config_dir)
+        if not ini_files:
+            print(f"No database INI files found in {args.config_dir}")
+        
+        for ini_file in ini_files:
+            db_username = read_username_from_ini(ini_file)
+            if not db_username:
+                print(f"Warning: Could not read username from {ini_file}")
+                db_username = "unknown"
+            
+            # Check if already encrypted
+            is_encrypted = False
+            config = configparser.ConfigParser()
+            try:
+                config.read(ini_file)
+                if 'DATABASE' in config and 'Password_Encrypted' in config['DATABASE']:
+                    is_encrypted = True
+            except Exception:
+                pass
+            
+            if is_encrypted and args.skip_prompt:
+                print(f"Password for {db_username} in {os.path.basename(ini_file)} already encrypted. Skipping due to --skip-prompt.")
+                continue
+            
+            print(f"\nEncrypting database password for {db_username} in {os.path.basename(ini_file)}")
+            choice = input("Continue? (y/n): ").strip().lower()
+            if choice == 'y':
+                password = getpass.getpass(f"Enter database password for {db_username}: ")
+                confirm = getpass.getpass("Confirm password: ")
+                if password != confirm:
+                    print("Passwords do not match!")
+                    return 1
+                
+                if not encrypt_db_password(db_username, password, ini_file):
+                    print(f"Failed to encrypt password for {ini_file}")
+                    continue
+            else:
+                print(f"Skipping password encryption for {os.path.basename(ini_file)}")
     
-    # Process based on the type
-    success = True
-    if args.type in ["confluence", "both"]:
-        if args.type == "both":
-            success = encrypt_confluence_password(conf_password, args.json_file)
-        else:
-            success = encrypt_confluence_password(password, args.json_file)
-        if not success:
-            return 1
-    
-    if args.type in ["db", "both"]:
-        if args.type == "both":
-            success = encrypt_db_password(db_password, args.ini_file)
-        else:
-            success = encrypt_db_password(password, args.ini_file)
-        if not success:
-            return 1
-    
-    print("\nPassword encryption completed successfully!")
+    print("\nPassword encryption process completed!")
     print(f"Key file: {SecureConfig.KEY_FILE}")
     print("\nIMPORTANT: Keep your key file secure. It is needed to decrypt passwords.")
     print("You can now run the main script without having to enter passwords.")
