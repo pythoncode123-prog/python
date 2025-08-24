@@ -1,0 +1,19 @@
+{
+  "countries": [
+    {
+      "name": "US",
+      "config_file": "config/db_us.ini",
+      "query_file": "config/query.sql"
+    },
+    {
+      "name": "UK",
+      "config_file": "config/db_uk.ini",
+      "query_file": "config/query.sql"
+    },
+    {
+      "name": "IN",
+      "config_file": "config/db_in.ini",
+      "query_file": "config/query.sql"
+    }
+  ]
+}
