@@ -1,0 +1,591 @@
+#!/usr/bin/env python3
+import os
+import sys
+import configparser
+from cryptography.fernet import Fernet
+import traceback
+
+# Get the current directory
+current_dir = os.path.abspath(os.path.dirname(__file__))
+print(f"Current directory: {current_dir}")
+
+# Add lib to path if needed
+lib_dir = os.path.join(current_dir, 'lib')
+if lib_dir not in sys.path:
+    sys.path.insert(0, lib_dir)
+    print(f"Added {lib_dir} to Python path")
+
+# Define key file path
+KEY_FILE = os.path.join(current_dir, "secure.key")
+print(f"Key file path: {KEY_FILE}")
+
+def generate_key():
+    """Generate a new Fernet key and save it to file."""
+    try:
+        print(f"Generating new key in {KEY_FILE}")
+        key = Fernet.generate_key()
+        
+        # Create directory if it doesn't exist
+        directory = os.path.dirname(KEY_FILE)
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+            
+        # Write key to file
+        with open(KEY_FILE, 'wb') as key_file:
+            key_file.write(key)
+            
+        print(f"Key written successfully ({len(key)} bytes)")
+        return key
+    except Exception as e:
+        print(f"Error generating key: {str(e)}")
+        traceback.print_exc()
+        return None
+
+def load_key():
+    """Load the key from file or generate if it doesn't exist."""
+    if not os.path.exists(KEY_FILE):
+        print(f"Key file not found: {KEY_FILE}")
+        return generate_key()
+    
+    try:
+        print(f"Loading key from {KEY_FILE}")
+        with open(KEY_FILE, 'rb') as key_file:
+            key = key_file.read()
+            
+        if not key:
+            print("Key file is empty. Regenerating...")
+            return generate_key()
+            
+        print(f"Key loaded successfully ({len(key)} bytes)")
+        print(f"Key (first 10 bytes): {key[:10]}")
+        return key
+    except Exception as e:
+        print(f"Error loading key: {str(e)}")
+        traceback.print_exc()
+        return None
+
+def encrypt_password(password):
+    """Encrypt a password using the key."""
+    try:
+        key = load_key()
+        if not key:
+            return None
+            
+        # Make sure password is bytes
+        if isinstance(password, str):
+            password_bytes = password.encode()
+        else:
+            password_bytes = password
+            
+        print(f"Encrypting password: {password}")
+        
+        # Create cipher and encrypt
+        cipher = Fernet(key)
+        encrypted = cipher.encrypt(password_bytes)
+        
+        # Return as string
+        result = encrypted.decode()
+        print(f"Encrypted result: {result[:20]}...")
+        return result
+    except Exception as e:
+        print(f"Encryption error: {str(e)}")
+        traceback.print_exc()
+        return None
+
+def decrypt_password(encrypted_password):
+    """Decrypt an encrypted password."""
+    try:
+        key = load_key()
+        if not key:
+            return None
+            
+        # Make sure encrypted password is bytes
+        if isinstance(encrypted_password, str):
+            encrypted_bytes = encrypted_password.encode()
+        else:
+            encrypted_bytes = encrypted_password
+            
+        print(f"Decrypting: {encrypted_password[:20]}...")
+        
+        # Create cipher and decrypt
+        cipher = Fernet(key)
+        decrypted = cipher.decrypt(encrypted_bytes)
+        
+        # Return as string
+        result = decrypted.decode()
+        print(f"Decrypted result: {result}")
+        return result
+    except Exception as e:
+        print(f"Decryption error: {str(e)}")
+        traceback.print_exc()
+        return None
+
+def check_ini_file(ini_file):
+    """Read an INI file and test decryption of any encrypted passwords."""
+    print(f"\n=== Checking INI file: {ini_file} ===")
+    
+    if not os.path.exists(ini_file):
+        print(f"File not found: {ini_file}")
+        return
+    
+    config = configparser.ConfigParser()
+    try:
+        config.read(ini_file)
+    except Exception as e:
+        print(f"Error reading INI file: {e}")
+        traceback.print_exc()
+        return
+    
+    if 'DATABASE' not in config:
+        print("No [DATABASE] section found")
+        return
+    
+    # Check for plain password
+    if 'Password' in config['DATABASE']:
+        plain_pwd = config['DATABASE']['Password']
+        print(f"Plain password: {plain_pwd}")
+        
+        # Test encrypting the plain password
+        print("Testing encryption of plain password...")
+        new_encrypted = encrypt_password(plain_pwd)
+        
+        # Try decrypting back
+        if new_encrypted:
+            print("Testing decryption of newly encrypted password...")
+            new_decrypted = decrypt_password(new_encrypted)
+            
+            if new_decrypted == plain_pwd:
+                print("✅ Encryption/decryption cycle works correctly!")
+            else:
+                print(f"❌ Decryption failed! Original: '{plain_pwd}', Decrypted: '{new_decrypted}'")
+    else:
+        print("No plain password found")
+    
+    # Check for encrypted password
+    if 'Password_Encrypted' in config['DATABASE']:
+        stored_encrypted = config['DATABASE']['Password_Encrypted']
+        print(f"Found encrypted password: {stored_encrypted[:20]}...")
+        
+        # Try decrypting
+        print("Testing decryption of stored encrypted password...")
+        decrypted = decrypt_password(stored_encrypted)
+        
+        if decrypted:
+            print(f"✅ Successfully decrypted to: {decrypted}")
+            
+            # Update the config with fixed encryption
+            print("Re-encrypting password...")
+            fixed_encrypted = encrypt_password(decrypted)
+            if fixed_encrypted:
+                print(f"Updating INI file with fixed encrypted password...")
+                config['DATABASE']['Password_Encrypted'] = fixed_encrypted
+                
+                try:
+                    with open(ini_file, 'w') as f:
+                        config.write(f)
+                    print(f"✅ Updated {ini_file} successfully!")
+                except Exception as e:
+                    print(f"❌ Failed to update INI file: {e}")
+        else:
+            print("❌ Failed to decrypt stored password!")
+            
+            if 'Password' in config['DATABASE']:
+                plain_pwd = config['DATABASE']['Password']
+                print(f"Re-encrypting plain password ({plain_pwd})...")
+                fixed_encrypted = encrypt_password(plain_pwd)
+                
+                if fixed_encrypted:
+                    print(f"Updating INI file with new encrypted password...")
+                    config['DATABASE']['Password_Encrypted'] = fixed_encrypted
+                    
+                    try:
+                        with open(ini_file, 'w') as f:
+                            config.write(f)
+                        print(f"✅ Updated {ini_file} successfully!")
+                    except Exception as e:
+                        print(f"❌ Failed to update INI file: {e}")
+    else:
+        print("No encrypted password found")
+        
+        if 'Password' in config['DATABASE']:
+            plain_pwd = config['DATABASE']['Password']
+            print(f"Encrypting plain password: {plain_pwd}...")
+            encrypted = encrypt_password(plain_pwd)
+            
+            if encrypted:
+                print(f"Adding encrypted password to INI file...")
+                config['DATABASE']['Password_Encrypted'] = encrypted
+                
+                try:
+                    with open(ini_file, 'w') as f:
+                        config.write(f)
+                    print(f"✅ Updated {ini_file} successfully!")
+                except Exception as e:
+                    print(f"❌ Failed to update INI file: {e}")
+
+def main():
+    print("\n===== Database Password Encryption Debug Tool =====")
+    print(f"Current time: 2025-08-24 14:59:08")
+    print(f"User: satish537")
+    
+    # Look for INI files in the config directory
+    config_dir = os.path.join(current_dir, 'config')
+    if not os.path.exists(config_dir):
+        print(f"Config directory not found: {config_dir}")
+        return 1
+        
+    print(f"Checking files in {config_dir}...")
+    ini_files = [os.path.join(config_dir, f) for f in os.listdir(config_dir) 
+                if f.endswith('.ini') and os.path.isfile(os.path.join(config_dir, f))]
+    
+    if not ini_files:
+        print("No INI files found!")
+        return 1
+        
+    print(f"Found {len(ini_files)} INI files: {', '.join(os.path.basename(f) for f in ini_files)}")
+    
+    # Fix each INI file
+    for ini_file in ini_files:
+        check_ini_file(ini_file)
+    
+    # Update db_utils.py
+    print("\n=== Fixing db_utils.py ===")
+    db_utils_path = os.path.join(current_dir, 'lib', 'db_utils.py')
+    if not os.path.exists(db_utils_path):
+        print(f"db_utils.py not found at {db_utils_path}")
+        return 1
+        
+    print(f"Backing up db_utils.py...")
+    backup_path = db_utils_path + '.bak'
+    try:
+        with open(db_utils_path, 'r', encoding='utf-8') as f:
+            db_utils_content = f.read()
+            
+        with open(backup_path, 'w', encoding='utf-8') as f:
+            f.write(db_utils_content)
+        print(f"Backup created: {backup_path}")
+    except Exception as e:
+        print(f"Failed to create backup: {e}")
+        traceback.print_exc()
+        return 1
+        
+    print("Creating fixed db_utils.py...")
+    try:
+        with open('db_utils_fixed.py', 'w', encoding='utf-8') as f:
+            f.write("""
+import pyodbc
+import csv
+import configparser
+import logging
+from datetime import datetime
+import os
+import oracledb
+import base64
+import traceback
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+
+def load_config(config_path):
+    """Load database configuration from file."""
+    logging.info(f"Loading database config from {config_path}")
+    
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    
+    if 'DATABASE' not in config:
+        logging.error(f"No [DATABASE] section found in {config_path}")
+        return None
+        
+    db_config = config['DATABASE']
+    
+    # Get username for logging
+    username = db_config.get('Username', 'unknown')
+    
+    # Get password (plain text first)
+    password = db_config.get('Password', '')
+    
+    # Try to decrypt password if available
+    if 'Password_Encrypted' in db_config:
+        try:
+            from lib.secure_config import SecureConfig
+            encrypted_pwd = db_config['Password_Encrypted']
+            logging.info(f"Found encrypted password for {username}")
+            
+            if os.path.exists(SecureConfig.KEY_FILE):
+                decrypted = SecureConfig.decrypt_password(encrypted_pwd)
+                if decrypted:
+                    password = decrypted
+                    logging.info("Using decrypted password")
+                    # For debugging only:
+                    # logging.info(f"Decrypted password: {password}")
+        except ImportError:
+            logging.warning("SecureConfig module not available")
+        except Exception as e:
+            logging.error(f"Error decrypting password: {str(e)}")
+    
+    # Build config dictionary
+    db_params = {
+        'host': db_config.get('DBHost', ''),
+        'port': db_config.get('Port', '1521'),
+        'service': db_config.get('ServiceName', ''),
+        'schema': db_config.get('SchemaName', ''),
+        'user': username,
+        'password': password
+    }
+    
+    # Log connection params (except password)
+    logging.info(f"DB connection parameters:")
+    logging.info(f"  Host: {db_params['host']}")
+    logging.info(f"  Port: {db_params['port']}")
+    logging.info(f"  Service: {db_params['service']}")
+    logging.info(f"  User: {db_params['user']}")
+    
+    return db_params
+
+def connect_oracle(cfg):
+    """Connect to Oracle database using configuration."""
+    if not cfg:
+        logging.error("Invalid database configuration")
+        return None
+        
+    try:
+        dsn = oracledb.makedsn(
+            cfg['host'],
+            int(cfg['port']),
+            service_name=cfg['service']
+        )
+        
+        logging.info(f"Connecting to Oracle as {cfg['user']}")
+        conn = oracledb.connect(
+            user=cfg['user'],
+            password=cfg['password'],
+            dsn=dsn
+        )
+        logging.info("Database connection successful")
+        return conn
+    except oracledb.DatabaseError as e:
+        error_obj = e.args[0]
+        if hasattr(error_obj, 'code'):
+            logging.error(f"Oracle Error {error_obj.code}: {error_obj.message}")
+        else:
+            logging.error(f"Oracle Error: {str(e)}")
+        return None
+    except Exception as e:
+        logging.error(f"Error connecting to database: {str(e)}")
+        return None
+
+def execute_query_and_write_csv(conn, query, csv_path):
+    """Execute query and write results to CSV file."""
+    cursor = conn.cursor()
+    try:
+        # Split the query on ';' and remove empty statements
+        statements = [stmt.strip() for stmt in query.split(';') if stmt.strip()]
+        # Execute all but the last statement (setup statements)
+        for stmt in statements[:-1]:
+            cursor.execute(stmt)
+        # Execute the last statement (the SELECT)
+        cursor.execute(statements[-1])
+        columns = [column[0] for column in cursor.description]
+        with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(columns)
+            row_count = 0
+            for row in cursor:
+                writer.writerow(row)
+                row_count += 1
+        logging.info(f"Wrote {row_count} rows to {csv_path}")
+        return True
+    except Exception as e:
+        logging.error(f"Error executing query: {str(e)}")
+        return False
+    finally:
+        if cursor:
+            cursor.close()
+
+def sql_to_csv(config_file, query_file, output_csv, execution_timestamp=None):
+    """Execute SQL and export to CSV."""
+    logging.info("Starting SQL to CSV process")
+    try:
+        # Check query file exists
+        if not os.path.exists(query_file):
+            logging.error(f"Query file '{query_file}' not found")
+            return False
+
+        cfg = load_config(config_file)
+        if not cfg:
+            return False
+
+        with open(query_file, 'r', encoding='utf-8') as f:
+            query = f.read()
+            
+        if '<EM_schema>' in query:
+            query = query.replace('<EM_schema>', cfg['schema'])
+            logging.info(f"Replaced schema placeholder with: {cfg['schema']}")
+        
+        conn = connect_oracle(cfg)
+        if not conn:
+            logging.error("Failed to connect to database")
+            return False
+            
+        try:
+            result = execute_query_and_write_csv(conn, query, output_csv)
+            conn.close()
+            
+            if result:
+                logging.info("SQL to CSV process completed successfully")
+                return True
+            else:
+                logging.error("SQL to CSV process failed")
+                return False
+        except Exception as e:
+            logging.error(f"Error in SQL execution: {str(e)}")
+            conn.close()
+            return False
+    except Exception as e:
+        logging.error(f"Error in SQL to CSV process: {str(e)}")
+        return False
+""")
+        print("Fixed db_utils.py created")
+
+        # Copy to actual location
+        with open(db_utils_path, 'w', encoding='utf-8') as f:
+            with open('db_utils_fixed.py', 'r', encoding='utf-8') as src:
+                f.write(src.read())
+        print(f"✅ Updated {db_utils_path}")
+    except Exception as e:
+        print(f"Failed to update db_utils.py: {e}")
+        traceback.print_exc()
+
+    # Also fix secure_config.py
+    print("\n=== Fixing secure_config.py ===")
+    secure_config_path = os.path.join(current_dir, 'lib', 'secure_config.py')
+    if not os.path.exists(secure_config_path):
+        print(f"secure_config.py not found at {secure_config_path}")
+        return 1
+        
+    print(f"Backing up secure_config.py...")
+    backup_path = secure_config_path + '.bak'
+    try:
+        with open(secure_config_path, 'r', encoding='utf-8') as f:
+            secure_config_content = f.read()
+            
+        with open(backup_path, 'w', encoding='utf-8') as f:
+            f.write(secure_config_content)
+        print(f"Backup created: {backup_path}")
+    except Exception as e:
+        print(f"Failed to create backup: {e}")
+        traceback.print_exc()
+        
+    print("Creating fixed secure_config.py...")
+    try:
+        with open('secure_config_fixed.py', 'w', encoding='utf-8') as f:
+            f.write("""
+import os
+import base64
+from cryptography.fernet import Fernet
+import logging
+
+class SecureConfig:
+    KEY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "secure.key")
+    
+    @classmethod
+    def generate_key(cls):
+        """Generate a new Fernet key and save it to KEY_FILE."""
+        try:
+            key = Fernet.generate_key()
+            with open(cls.KEY_FILE, 'wb') as key_file:
+                key_file.write(key)
+            return key
+        except Exception as e:
+            logging.error(f"Error generating key: {str(e)}")
+            return None
+    
+    @classmethod
+    def _load_key(cls):
+        """Load the key from KEY_FILE."""
+        if not os.path.exists(cls.KEY_FILE):
+            logging.error(f"Key file not found: {cls.KEY_FILE}")
+            return cls.generate_key()
+        
+        try:
+            with open(cls.KEY_FILE, 'rb') as key_file:
+                key = key_file.read()
+            return key
+        except Exception as e:
+            logging.error(f"Error loading key: {str(e)}")
+            return None
+    
+    @classmethod
+    def encrypt_password(cls, password):
+        """Encrypt the password using Fernet encryption."""
+        try:
+            key = cls._load_key()
+            if not key:
+                return None
+                
+            # Make sure password is bytes
+            if isinstance(password, str):
+                password = password.encode()
+                
+            # Create Fernet cipher with the key and encrypt
+            cipher = Fernet(key)
+            encrypted = cipher.encrypt(password)
+            
+            # Return as string for storage in config
+            return encrypted.decode()
+        except Exception as e:
+            logging.error(f"Encryption error: {str(e)}")
+            return None
+    
+    @classmethod
+    def decrypt_password(cls, encrypted_password):
+        """Decrypt the password using Fernet decryption."""
+        try:
+            key = cls._load_key()
+            if not key:
+                return None
+                
+            # Make sure encrypted password is bytes
+            if isinstance(encrypted_password, str):
+                encrypted_password = encrypted_password.encode()
+                
+            # Create Fernet cipher with the key and decrypt
+            cipher = Fernet(key)
+            decrypted = cipher.decrypt(encrypted_password)
+            
+            # Return as string
+            return decrypted.decode()
+        except Exception as e:
+            logging.error(f"Decryption error: {str(e)}")
+            return None
+""")
+        print("Fixed secure_config.py created")
+
+        # Copy to actual location
+        with open(secure_config_path, 'w', encoding='utf-8') as f:
+            with open('secure_config_fixed.py', 'r', encoding='utf-8') as src:
+                f.write(src.read())
+        print(f"✅ Updated {secure_config_path}")
+    except Exception as e:
+        print(f"Failed to update secure_config.py: {e}")
+        traceback.print_exc()
+        
+    print("\n=== Summary ===")
+    print("1. Checked and fixed all INI files")
+    print("2. Updated db_utils.py with better password handling")
+    print("3. Fixed secure_config.py for consistent encryption/decryption")
+    print("\nPlease run your script again - the password should be correctly decrypted now.")
+    return 0
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nUnexpected error: {e}")
+        traceback.print_exc()
+        sys.exit(1)
