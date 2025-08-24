@@ -15,10 +15,9 @@ from typing import Tuple, Optional, Dict, List
 # - Optional column override via JOB_COLUMN
 # - Month selection + debug diagnostics
 # - Transposed Top 4 Peaks (Baseline vs Total Jobs)
-# - Single-series Daily Total Jobs (GREEN bars only)
+# - Single-series Daily Total Jobs (FIXED: all green bars)
 # - FIXED: Chart display with proper structure
 # - FIXED: Removed per-country peaks sections
-# - FIXED: Forced consistent green color
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -322,67 +321,92 @@ def generate_daily_total_single_series(df: pd.DataFrame,
                                        title: str = "Daily Total Jobs (All Countries)",
                                        show_percent: bool = False) -> str:
     """
-    Single green bar per date (like original). Optionally show % labels.
-    FIXED: Force all bars to be green by using explicit attributes
+    COMPLETELY REWRITTEN to match the example code
+    - Single series with forced green color
+    - Different table structure that guarantees single color
     """
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
     if daily.empty:
         return "<p>No daily data.</p>"
-    dates = [d.strftime('%Y-%m-%d') for d in daily['DATE']]
-    totals = [int(v) for v in daily['TOTAL_JOBS']]
-    percent_labels = []
-    if show_percent:
-        for v in totals:
-            pct = (v / baseline) * 100 if baseline else 0
-            percent_labels.append(f"{pct:.1f}%")
     
-    # FIXED: Modified to use a single series with forced green color
-    # This ensures all bars are green as requested
+    # Convert to the format needed for the chart
+    # Create a one-row DataFrame with Date as column headers
+    date_columns = {}
+    for _, row in daily.iterrows():
+        date_str = row['DATE'].strftime('%Y-%m-%d')
+        date_columns[date_str] = int(row['TOTAL_JOBS'])
     
-    # Build table for chart with single column (forcing all bars to one series)
-    rows = ["<tr><th>Date</th><th>Total Jobs</th></tr>"]
-    for i, d in enumerate(dates):
-        val = totals[i]
-        rows.append(f"<tr><td>{d}</td><td>{val}</td></tr>")
-    table_html = "<table><tbody>" + "".join(rows) + "</tbody></table>"
+    # Create header row
+    header_row = "<tr><th>Series</th>"
+    for date in date_columns.keys():
+        header_row += f"<th>{date}</th>"
+    header_row += "</tr>"
     
-    macro = f"""
+    # Create data row (only one series - Total Jobs)
+    data_row = "<tr><td>Total Jobs</td>"
+    for value in date_columns.values():
+        data_row += f"<td>{value}</td>"
+    data_row += "</tr>"
+    
+    # Table structure
+    table_html = f"""<table><tbody>{header_row}{data_row}</tbody></table>"""
+    
+    # Create chart macro exactly matching the reference example
+    chart = f"""
 <h3>{title}</h3>
 <ac:structured-macro ac:name="chart">
-  <ac:parameter ac:name="title">{title}</ac:parameter>
   <ac:parameter ac:name="type">bar</ac:parameter>
-  <ac:parameter ac:name="orientation">vertical</ac:parameter>
-  <ac:parameter ac:name="3D">true</ac:parameter>
+  <ac:parameter ac:name="title">{title}</ac:parameter>
   <ac:parameter ac:name="width">1200</ac:parameter>
   <ac:parameter ac:name="height">520</ac:parameter>
+  <ac:parameter ac:name="3D">true</ac:parameter>
   <ac:parameter ac:name="legend">false</ac:parameter>
-  <ac:parameter ac:name="dataDisplay">false</ac:parameter>
-  <ac:parameter ac:name="showValues">true</ac:parameter>
-  <ac:parameter ac:name="valuePosition">inside</ac:parameter>
-  <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
+  <ac:parameter ac:name="orientation">vertical</ac:parameter>
   <ac:parameter ac:name="labelAngle">45</ac:parameter>
-  <ac:parameter ac:name="xLabel">Date</ac:parameter>
-  <ac:parameter ac:name="yLabel">Jobs</ac:parameter>
+  <ac:parameter ac:name="stacked">false</ac:parameter>
+  <ac:parameter ac:name="showValues">true</ac:parameter>
+  <ac:parameter ac:name="xaxisLabel">Date</ac:parameter>
+  <ac:parameter ac:name="yaxisLabel">Jobs</ac:parameter>
   <ac:parameter ac:name="colors">#6B8E23</ac:parameter>
-  <ac:parameter ac:name="seriesColors">#6B8E23</ac:parameter>
-  <ac:parameter ac:name="forceColor">true</ac:parameter>
-  <ac:parameter ac:name="defaultColor">#6B8E23</ac:parameter>
   <ac:rich-text-body>
     {table_html}
   </ac:rich-text-body>
 </ac:structured-macro>
 """
-    return macro
+    return chart
 
 def generate_variation_line(df: pd.DataFrame, baseline: int) -> str:
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
     if daily.empty:
         return "<p>No variation data.</p>"
-    rows = ["<tr><th>Date</th><th>Baseline</th><th>Total Jobs</th></tr>"]
-    for _, r in daily.iterrows():
-        ds = r['DATE'].strftime('%Y-%m-%d')
-        rows.append(f"<tr><td>{ds}</td><td>{baseline}</td><td>{int(r['TOTAL_JOBS'])}</td></tr>")
-    table_html = "<table><tbody>" + "".join(rows) + "</tbody></table>"
+    
+    # Convert data to the format needed for the chart
+    date_columns = {}
+    for _, row in daily.iterrows():
+        date_str = row['DATE'].strftime('%Y-%m-%d')
+        date_columns[date_str] = int(row['TOTAL_JOBS'])
+    
+    # Create header row
+    header_row = "<tr><th>Series</th>"
+    for date in date_columns.keys():
+        header_row += f"<th>{date}</th>"
+    header_row += "</tr>"
+    
+    # Create baseline row
+    baseline_row = "<tr><td>Baseline</td>"
+    for _ in date_columns:
+        baseline_row += f"<td>{baseline}</td>"
+    baseline_row += "</tr>"
+    
+    # Create total jobs row
+    jobs_row = "<tr><td>Total Jobs</td>"
+    for value in date_columns.values():
+        jobs_row += f"<td>{value}</td>"
+    jobs_row += "</tr>"
+    
+    # Table structure
+    table_html = f"""<table><tbody>{header_row}{baseline_row}{jobs_row}</tbody></table>"""
+    
     return f"""
 <h3>Baseline vs Daily Totals (Line)</h3>
 <ac:structured-macro ac:name="chart">
@@ -540,8 +564,8 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         variation_line = generate_variation_line(df, baseline)
         summary = generate_daily_summary(df)
 
-        timestamp = "2025-08-24 13:41:38"  # Updated timestamp from user
-        user = "satish537"  # User from user
+        timestamp = "2025-08-24 13:46:45"  # Current timestamp from user
+        user = "satish537"  # Current user from user
         content = f"""
 <h1>Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
@@ -625,11 +649,8 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
         )
         global_variation = generate_variation_line(all_df, baseline)
 
-        # FIXED: Removed per-country sections as requested
-        # No longer generating individual country sections
-
-        timestamp = "2025-08-24 13:41:38"  # Updated timestamp from user
-        user = "satish537"  # User from user
+        timestamp = "2025-08-24 13:46:45"  # Current timestamp from user
+        user = "satish537"  # Current user from user
         content = f"""
 <h1>Multi-Country Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
