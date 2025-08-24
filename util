@@ -5,6 +5,8 @@ import logging
 from datetime import datetime
 import os
 import oracledb
+import base64
+import traceback
 
 # Import the SecureConfig class for password decryption
 try:
@@ -15,62 +17,145 @@ except ImportError:
 
 def load_config(config_path):
     """Load database configuration from file."""
+    logging.info(f"Loading database config from {config_path}")
+    
     config = configparser.ConfigParser()
     config.read(config_path)
+    
+    if 'DATABASE' not in config:
+        logging.error(f"No [DATABASE] section found in {config_path}")
+        return None
+        
     db_config = config['DATABASE']
+    
+    # Get username for logging
+    username = db_config.get('Username', 'unknown')
+    logging.info(f"Database username from config: {username}")
     
     # Try to get encrypted password if available
     password = db_config.get('Password', '')
+    
     if HAS_SECURE_CONFIG and 'Password_Encrypted' in db_config:
         try:
-            decrypted_password = SecureConfig.decrypt_password(db_config['Password_Encrypted'])
-            if decrypted_password:
-                password = decrypted_password
-                logging.info("Using decrypted database password")
+            encrypted_pwd = db_config['Password_Encrypted']
+            logging.info(f"Found encrypted password for {username} (length: {len(encrypted_pwd)})")
+            
+            # Debug: Check if the key file exists
+            if not os.path.exists(SecureConfig.KEY_FILE):
+                logging.error(f"Encryption key file not found: {SecureConfig.KEY_FILE}")
+                logging.warning("Falling back to plain text password")
+            else:
+                logging.info(f"Using encryption key from: {SecureConfig.KEY_FILE}")
+                
+                # Try to decrypt
+                decrypted_password = SecureConfig.decrypt_password(encrypted_pwd)
+                if decrypted_password:
+                    password = decrypted_password
+                    logging.info(f"Successfully decrypted password for {username}")
+                else:
+                    logging.error(f"Decryption returned empty password for {username}")
         except Exception as e:
-            logging.warning(f"Could not decrypt database password: {e}")
+            logging.error(f"Error decrypting password: {str(e)}")
+            logging.error(traceback.format_exc())
             logging.warning("Falling back to plain text password")
+    else:
+        if not HAS_SECURE_CONFIG:
+            logging.warning("SecureConfig module not available, using plain text password")
+        if 'Password_Encrypted' not in db_config:
+            logging.warning(f"No encrypted password found for {username}, using plain text")
     
-    return {
+    # Build the config dictionary
+    db_params = {
         'host': db_config.get('DBHost', ''),
         'port': db_config.get('Port', '1521'),
         'service': db_config.get('ServiceName', ''),
         'schema': db_config.get('SchemaName', ''),
-        'user': db_config.get('Username', ''),
+        'user': username,
         'password': password
     }
+    
+    # Log connection details (without password)
+    logging.info(f"Database connection parameters:")
+    logging.info(f"  Host: {db_params['host']}")
+    logging.info(f"  Port: {db_params['port']}")
+    logging.info(f"  Service: {db_params['service']}")
+    logging.info(f"  Schema: {db_params['schema']}")
+    logging.info(f"  User: {db_params['user']}")
+    
+    return db_params
 
 def connect_oracle(cfg):
     """Connect to Oracle database using configuration."""
-    dsn = oracledb.makedsn(
-        cfg['host'],
-        int(cfg['port']),
-        service_name=cfg['service']
-    )
-    return oracledb.connect(
-        user=cfg['user'],
-        password=cfg['password'],
-        dsn=dsn
-    )
+    if not cfg:
+        logging.error("Invalid database configuration")
+        return None
+        
+    try:
+        logging.info(f"Creating DSN for {cfg['host']}:{cfg['port']}/{cfg['service']}")
+        dsn = oracledb.makedsn(
+            cfg['host'],
+            int(cfg['port']),
+            service_name=cfg['service']
+        )
+        
+        logging.info(f"Connecting to Oracle as user {cfg['user']}...")
+        conn = oracledb.connect(
+            user=cfg['user'],
+            password=cfg['password'],
+            dsn=dsn
+        )
+        logging.info("Database connection successful")
+        return conn
+    except oracledb.DatabaseError as e:
+        error_obj = e.args[0]
+        logging.error(f"Oracle Database Error: {error_obj.code} - {error_obj.message}")
+        if error_obj.code == 1017:  # Invalid username/password
+            logging.error(f"Authentication failed for user {cfg['user']}. Check username and password.")
+        return None
+    except Exception as e:
+        logging.error(f"Error connecting to database: {str(e)}")
+        logging.error(traceback.format_exc())
+        return None
 
 def execute_query_and_write_csv(conn, query, csv_path):
     """Execute query and write results to CSV file."""
+    if not conn:
+        logging.error("No database connection to execute query")
+        return False
+        
     cursor = conn.cursor()
-    # Split the query on ';' and remove empty statements
-    statements = [stmt.strip() for stmt in query.split(';') if stmt.strip()]
-    # Execute all but the last statement (setup statements)
-    for stmt in statements[:-1]:
-        cursor.execute(stmt)
-    # Execute the last statement (the SELECT)
-    cursor.execute(statements[-1])
-    columns = [column[0] for column in cursor.description]
-    with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(columns)
-        for row in cursor:
-            writer.writerow(row)
-    cursor.close()
-    logging.info(f"SQL query results exported to {csv_path}")
+    try:
+        # Split the query on ';' and remove empty statements
+        statements = [stmt.strip() for stmt in query.split(';') if stmt.strip()]
+        # Execute all but the last statement (setup statements)
+        for i, stmt in enumerate(statements[:-1]):
+            logging.info(f"Executing setup statement {i+1}/{len(statements)-1}")
+            cursor.execute(stmt)
+        
+        # Execute the last statement (the SELECT)
+        logging.info("Executing main query...")
+        cursor.execute(statements[-1])
+        
+        columns = [column[0] for column in cursor.description]
+        logging.info(f"Query returned {len(columns)} columns: {', '.join(columns)}")
+        
+        with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(columns)
+            row_count = 0
+            for row in cursor:
+                writer.writerow(row)
+                row_count += 1
+                
+        logging.info(f"Wrote {row_count} rows to {csv_path}")
+        cursor.close()
+        return True
+    except Exception as e:
+        logging.error(f"Error executing query: {str(e)}")
+        logging.error(traceback.format_exc())
+        if cursor:
+            cursor.close()
+        return False
 
 def sql_to_csv(config_file, query_file, output_csv, execution_timestamp=None):
     """Execute SQL and export to CSV."""
@@ -82,15 +167,32 @@ def sql_to_csv(config_file, query_file, output_csv, execution_timestamp=None):
             return False
 
         cfg = load_config(config_file)
+        if not cfg:
+            logging.error(f"Failed to load database configuration from {config_file}")
+            return False
+            
         with open(query_file, 'r', encoding='utf-8') as f:
             query = f.read()
-        query = query.replace('<EM_schema>', cfg['schema'])
+            
+        if '<EM_schema>' in query:
+            logging.info(f"Replacing <EM_schema> with {cfg['schema']}")
+            query = query.replace('<EM_schema>', cfg['schema'])
         
         conn = connect_oracle(cfg)
-        execute_query_and_write_csv(conn, query, output_csv)
+        if not conn:
+            logging.error("Failed to connect to database")
+            return False
+            
+        result = execute_query_and_write_csv(conn, query, output_csv)
         conn.close()
-        logging.info("SQL to CSV process completed successfully")
-        return True
+        
+        if result:
+            logging.info("SQL to CSV process completed successfully")
+            return True
+        else:
+            logging.error("Failed to execute query and write CSV")
+            return False
     except Exception as e:
         logging.error(f"Error in SQL to CSV process: {str(e)}")
+        logging.error(traceback.format_exc())
         return False
