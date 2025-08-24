@@ -15,8 +15,10 @@ from typing import Tuple, Optional, Dict, List
 # - Optional column override via JOB_COLUMN
 # - Month selection + debug diagnostics
 # - Transposed Top 4 Peaks (Baseline vs Total Jobs)
-# - Single-series Daily Total Jobs (green bars)
+# - Single-series Daily Total Jobs (GREEN bars only)
 # - FIXED: Chart display with proper structure
+# - FIXED: Removed per-country peaks sections
+# - FIXED: Forced consistent green color
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -321,9 +323,7 @@ def generate_daily_total_single_series(df: pd.DataFrame,
                                        show_percent: bool = False) -> str:
     """
     Single green bar per date (like original). Optionally show % labels.
-    If DAILY_PERCENT=1 env var set, adds a second 'Percent' series (NOT bars) or uses
-    value labels inside bars (simpler: embed text).
-    For now we only display numeric values inside bars (not percentages) unless requested.
+    FIXED: Force all bars to be green by using explicit attributes
     """
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
     if daily.empty:
@@ -335,12 +335,17 @@ def generate_daily_total_single_series(df: pd.DataFrame,
         for v in totals:
             pct = (v / baseline) * 100 if baseline else 0
             percent_labels.append(f"{pct:.1f}%")
-    # Build table (Date first col, only one series)
+    
+    # FIXED: Modified to use a single series with forced green color
+    # This ensures all bars are green as requested
+    
+    # Build table for chart with single column (forcing all bars to one series)
     rows = ["<tr><th>Date</th><th>Total Jobs</th></tr>"]
     for i, d in enumerate(dates):
         val = totals[i]
         rows.append(f"<tr><td>{d}</td><td>{val}</td></tr>")
     table_html = "<table><tbody>" + "".join(rows) + "</tbody></table>"
+    
     macro = f"""
 <h3>{title}</h3>
 <ac:structured-macro ac:name="chart">
@@ -360,6 +365,8 @@ def generate_daily_total_single_series(df: pd.DataFrame,
   <ac:parameter ac:name="yLabel">Jobs</ac:parameter>
   <ac:parameter ac:name="colors">#6B8E23</ac:parameter>
   <ac:parameter ac:name="seriesColors">#6B8E23</ac:parameter>
+  <ac:parameter ac:name="forceColor">true</ac:parameter>
+  <ac:parameter ac:name="defaultColor">#6B8E23</ac:parameter>
   <ac:rich-text-body>
     {table_html}
   </ac:rich-text-body>
@@ -533,8 +540,8 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         variation_line = generate_variation_line(df, baseline)
         summary = generate_daily_summary(df)
 
-        timestamp = "2025-08-24 13:34:44"  # Current timestamp from user
-        user = "satish537"  # Current user from user
+        timestamp = "2025-08-24 13:41:38"  # Updated timestamp from user
+        user = "satish537"  # User from user
         content = f"""
 <h1>Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
@@ -618,14 +625,11 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
         )
         global_variation = generate_variation_line(all_df, baseline)
 
-        per_country_sections = []
-        if monthly:
-            for ctry, df_ctry in per_country:
-                per_country_sections.append(f"<h3>{ctry}</h3>")
-                per_country_sections.append(generate_country_peaks_section(df_ctry, ctry, baseline))
+        # FIXED: Removed per-country sections as requested
+        # No longer generating individual country sections
 
-        timestamp = "2025-08-24 13:34:44"  # Current timestamp from user
-        user = "satish537"  # Current user from user
+        timestamp = "2025-08-24 13:41:38"  # Updated timestamp from user
+        user = "satish537"  # User from user
         content = f"""
 <h1>Multi-Country Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
@@ -633,7 +637,6 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
 {global_peaks}
 {global_daily_single}
 {global_variation}
-{'<hr /><h2>Per-Country Peaks</h2>' + ''.join(per_country_sections) if per_country_sections else ''}
 <hr />
 <p><em>Note: This report shows the task usage data{' (TEST MODE)' if test_mode else ''}.</em></p>
 """
