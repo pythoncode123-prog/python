@@ -9,13 +9,13 @@ import logging
 import re
 from typing import Tuple, Optional, Dict, List
 
-# -----------------------------------------------
-# Confluence Publisher (Refined)
-# - Correct table orientation for Confluence Chart macro
-# - Global (all countries) monthly Top 4 Peaks
-# - Per-country optional peaks
-# - Daily Totals (all countries) bar chart (2 series only)
-# -----------------------------------------------
+# -------------------------------------------------------------
+# Confluence Publisher
+# - Monthly vs Daily detection
+# - Global & per-country Top 4 Peaks with TRANSPOSED table
+#   (Dates as column headers, first column = Metric)
+# - Aggregation across all countries before peak calc
+# -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -24,17 +24,26 @@ MONTH_NAMES = (
     "July", "August", "September", "October", "November", "December"
 )
 
-# ------------- Run Mode Detection ---------------
+# -------------------------------------------------------------
+# Run Mode Detection
+# -------------------------------------------------------------
 
 def _is_monthly_run(config: Dict) -> bool:
+    """
+    Monthly run if PAGE_TITLE ends with ' - <MonthName>'.
+    Daily run if ends with '_daily'.
+    Default True (monthly) if ambiguous (legacy behavior).
+    """
     title = config.get('PAGE_TITLE', '')
     if title.endswith('_daily'):
         return False
     if re.search(r'\s-\s(' + '|'.join(MONTH_NAMES) + r')$', title):
         return True
-    return True  # default to monthly behavior
+    return True
 
-# ------------- Config / Auth ---------------------
+# -------------------------------------------------------------
+# Config / Auth
+# -------------------------------------------------------------
 
 def load_config(config_path: str = "config.json") -> Optional[Dict]:
     try:
@@ -81,7 +90,7 @@ def create_session(config: Dict) -> Optional[requests.Session]:
     elif auth_type == 'cookie':
         cookie = os.environ.get('CONFLUENCE_COOKIE') or config.get('SESSION_COOKIE')
         if not cookie:
-            logging.error("Missing cookie token.")
+            logging.error("Missing cookie value for cookie auth.")
             return None
         session.headers.update({"Cookie": cookie})
     else:
@@ -97,7 +106,9 @@ def create_session(config: Dict) -> Optional[requests.Session]:
     session.verify = False
     return session
 
-# ------------- Data Loading ----------------------
+# -------------------------------------------------------------
+# Data Loading
+# -------------------------------------------------------------
 
 def load_csv_data(csv_file: str) -> Tuple[pd.DataFrame, bool]:
     try:
@@ -111,57 +122,83 @@ def load_csv_data(csv_file: str) -> Tuple[pd.DataFrame, bool]:
         logging.error(f"Error loading CSV {csv_file}: {e}")
         return pd.DataFrame(), False
 
-# ------------- Peak Computation Utilities --------
+# -------------------------------------------------------------
+# Peak Calculation
+# -------------------------------------------------------------
 
 def _latest_year_month(daily_df: pd.DataFrame) -> Tuple[int, int]:
     latest = daily_df['DATE'].max()
     return latest.year, latest.month
 
 def compute_monthly_top_peaks(df: pd.DataFrame,
-                              top_n: int,
-                              year: Optional[int],
-                              month: Optional[int]) -> pd.DataFrame:
+                              top_n: int = 4,
+                              year: Optional[int] = None,
+                              month: Optional[int] = None) -> pd.DataFrame:
     """
-    Returns a DataFrame with columns: DATE, TOTAL_JOBS (aggregated),
-    limited to the specified month & top_n days by TOTAL_JOBS.
+    df expected to have DATE, TOTAL_JOBS (already aggregated or raw).
+    Returns top_n rows (DATE, TOTAL_JOBS) for that month, descending by TOTAL_JOBS.
     """
-    subset = df[['DATE', 'TOTAL_JOBS']].dropna()
-    daily = subset.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+    base = df[['DATE', 'TOTAL_JOBS']].dropna()
+    daily = base.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+    if daily.empty:
+        return daily.iloc[0:0]
+
     if year is None or month is None:
         year, month = _latest_year_month(daily)
+
     month_df = daily[(daily.DATE.dt.year == year) & (daily.DATE.dt.month == month)]
     if month_df.empty:
-        return pd.DataFrame(columns=['DATE', 'TOTAL_JOBS'])
+        return month_df
+
     try:
         peaks = month_df.nlargest(top_n, 'TOTAL_JOBS')
     except Exception:
         peaks = month_df.sort_values('TOTAL_JOBS', ascending=False).head(top_n)
-    return peaks
 
-# ------------- Chart Generators ------------------
+    # Keep only DATE/TOTAL_JOBS columns
+    return peaks[['DATE', 'TOTAL_JOBS']]
 
-def generate_top4_peaks_chart(peaks_df: pd.DataFrame,
-                              baseline: int,
-                              title: str) -> str:
+# -------------------------------------------------------------
+# Chart Builders (Transposed for Peaks)
+# -------------------------------------------------------------
+
+def build_transposed_chart_table(dates: List[str],
+                                 baseline_values: List[int],
+                                 total_values: List[int]) -> str:
     """
-    Build the actual bar chart macro for Top 4 peaks.
-    Table structure EXACTLY:
-      Date | Baseline | Total Jobs
-      (one row per date)
-    ONLY the table in the rich-text-body to avoid orientation issues.
+    Build transposed table:
+       First row header: Metric + each date column
+       Rows: Baseline, Total Jobs
+    This matches your reference snippet style.
+    """
+    header_cells = "".join(f"<th>{d}</th>" for d in dates)
+    baseline_row = "<tr><th>Baseline</th>" + "".join(f"<td>{b}</td>" for b in baseline_values) + "</tr>"
+    total_row = "<tr><th>Total Jobs</th>" + "".join(f"<td>{t}</td>" for t in total_values) + "</tr>"
+    return f"<table><tbody><tr><th>Date</th>{header_cells}</tr>{baseline_row}{total_row}</tbody></table>"
+
+def build_transposed_peaks_chart(peaks_df: pd.DataFrame,
+                                 baseline: int,
+                                 title: str) -> str:
+    """
+    Create the CHART macro with a transposed table similar to user's reference.
+    Each date becomes a column; rows are Baseline and Total Jobs.
     """
     if peaks_df.empty:
-        return f"<p>No peak data for {title}.</p>"
+        return f"<p>No data for {title}.</p>"
+
+    # Sort by date ascending for consistent left->right order
     peaks_df = peaks_df.sort_values('DATE')
-    rows = ["<tr><th>Date</th><th>Baseline</th><th>Total Jobs</th></tr>"]
-    for _, r in peaks_df.iterrows():
-        d = r['DATE'].strftime('%Y-%m-%d')
-        rows.append(f"<tr><td>{d}</td><td>{baseline}</td><td>{int(r['TOTAL_JOBS'])}</td></tr>")
-    table_html = "<table><tbody>" + "".join(rows) + "</tbody></table>"
+    date_labels = [d.strftime('%Y-%m-%d') for d in peaks_df['DATE']]
+    baseline_list = [baseline] * len(peaks_df)
+    total_list = [int(v) for v in peaks_df['TOTAL_JOBS']]
+
+    table_html = build_transposed_chart_table(date_labels, baseline_list, total_list)
+
+    # Keep params minimal & stable
     return f"""
 <ac:structured-macro ac:name="chart">
-  <ac:parameter ac:name="title">{title}</ac:parameter>
   <ac:parameter ac:name="type">bar</ac:parameter>
+  <ac:parameter ac:name="title">{title}</ac:parameter>
   <ac:parameter ac:name="orientation">vertical</ac:parameter>
   <ac:parameter ac:name="3D">true</ac:parameter>
   <ac:parameter ac:name="width">900</ac:parameter>
@@ -172,102 +209,116 @@ def generate_top4_peaks_chart(peaks_df: pd.DataFrame,
   <ac:parameter ac:name="showValues">true</ac:parameter>
   <ac:parameter ac:name="valuePosition">inside</ac:parameter>
   <ac:parameter ac:name="displayValuesOnBars">true</ac:parameter>
-  <ac:parameter ac:name="colors">#B22222,#6B8E23</ac:parameter>
-  <ac:parameter ac:name="seriesColors">#B22222,#6B8E23</ac:parameter>
   <ac:parameter ac:name="labelAngle">45</ac:parameter>
   <ac:parameter ac:name="xLabel">Date</ac:parameter>
   <ac:parameter ac:name="yLabel">Jobs</ac:parameter>
+  <ac:parameter ac:name="colors">#B22222,#6B8E23</ac:parameter>
+  <ac:parameter ac:name="seriesColors">#B22222,#6B8E23</ac:parameter>
   <ac:rich-text-body>
     {table_html}
   </ac:rich-text-body>
 </ac:structured-macro>
 """
 
-def generate_peaks_detail_table(peaks_df: pd.DataFrame,
-                                baseline: int,
-                                month_label: str) -> str:
+def build_peaks_detail_table(peaks_df: pd.DataFrame,
+                             baseline: int,
+                             label: str) -> str:
     if peaks_df.empty:
         return ""
-    # Rank by TOTAL_JOBS desc
     ranked = peaks_df.sort_values('TOTAL_JOBS', ascending=False).reset_index(drop=True)
-    rank_map = {row.DATE: idx + 1 for idx, row in ranked.iterrows()}
+    rank_map = {row.DATE: i + 1 for i, row in ranked.iterrows()}
     display = peaks_df.sort_values('DATE').copy()
     display['Variation'] = baseline - display['TOTAL_JOBS']
     rows = ["<tr><th>Rank</th><th>Date</th><th>Total Jobs</th><th>Baseline</th><th>Variation</th></tr>"]
     for _, r in display.iterrows():
-        d = r['DATE'].strftime('%Y-%m-%d')
         variation = int(r['Variation'])
         style = 'style="background-color:#90EE90;"' if variation > 0 else 'style="background-color:#FFB6C1;"'
         rows.append(
-            f"<tr><td>{rank_map[r['DATE']]}</td><td>{d}</td>"
-            f"<td>{int(r['TOTAL_JOBS'])}</td><td>{baseline}</td>"
-            f"<td {style}>{variation}</td></tr>"
+            f"<tr>"
+            f"<td>{rank_map[r['DATE']]}</td>"
+            f"<td>{r['DATE'].strftime('%Y-%m-%d')}</td>"
+            f"<td>{int(r['TOTAL_JOBS'])}</td>"
+            f"<td>{baseline}</td>"
+            f"<td {style}>{variation}</td>"
+            f"</tr>"
         )
-    table_html = "<table class='wrapped'><tbody>" + "".join(rows) + "</tbody></table>"
-    return f"<h4>Top 4 Peaks Detail ({month_label})</h4>{table_html}"
+    return f"<h4>Top 4 Peaks Detail ({label})</h4><table class='wrapped'><tbody>{''.join(rows)}</tbody></table>"
 
-def generate_global_monthly_top4_peaks(df: pd.DataFrame,
-                                       baseline: int,
-                                       top_n: int = 4) -> str:
+# -------------------------------------------------------------
+# Global & Per-Country Peak Sections
+# -------------------------------------------------------------
+
+def generate_global_monthly_top4_peaks_transposed(df: pd.DataFrame,
+                                                  baseline: int) -> str:
     if 'DATE' not in df.columns or 'TOTAL_JOBS' not in df.columns:
-        return "<p>No columns for global peaks.</p>"
+        return "<p>Missing DATE or TOTAL_JOBS columns for peaks.</p>"
+    # Aggregate across all countries
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
-    if daily.empty:
-        return "<p>No data for global peaks.</p>"
-    peaks = compute_monthly_top_peaks(daily, top_n=top_n, year=None, month=None)
+    peaks = compute_monthly_top_peaks(daily, top_n=4)
     if peaks.empty:
-        return "<p>No peak data for month.</p>"
+        return "<p>No peak data for current month.</p>"
     month_label = peaks['DATE'].dt.strftime('%b').iloc[0]
-    chart = generate_top4_peaks_chart(peaks, baseline, f"Top {len(peaks)} Peaks (All Countries) of {month_label}")
-    details = generate_peaks_detail_table(peaks, baseline, f"{month_label} (All Countries)")
+    chart = build_transposed_peaks_chart(peaks, baseline, f"Top {len(peaks)} Peaks (All Countries) of {month_label}")
+    details = build_peaks_detail_table(peaks, baseline, f"All Countries {month_label}")
     return chart + details
 
-def generate_country_monthly_top4_peaks(df_country: pd.DataFrame,
-                                        country: str,
-                                        baseline: int,
-                                        top_n: int = 4) -> str:
-    peaks = compute_monthly_top_peaks(df_country, top_n=top_n, year=None, month=None)
+def generate_country_top4_peaks_transposed(df_country: pd.DataFrame,
+                                           country: str,
+                                           baseline: int) -> str:
+    peaks = compute_monthly_top_peaks(df_country, top_n=4)
     if peaks.empty:
-        return f"<p>No peak data for {country}.</p>"
+        return f"<p>No peak data for {country} (month).</p>"
     month_label = peaks['DATE'].dt.strftime('%b').iloc[0]
-    chart = generate_top4_peaks_chart(peaks, baseline, f"{country}: Top {len(peaks)} Peaks of {month_label}")
-    details = generate_peaks_detail_table(peaks, baseline, f"{country} {month_label}")
+    chart = build_transposed_peaks_chart(peaks, baseline, f"{country}: Top {len(peaks)} Peaks of {month_label}")
+    details = build_peaks_detail_table(peaks, baseline, f"{country} {month_label}")
     return chart + details
+
+# -------------------------------------------------------------
+# Daily Total Jobs (All Countries) Chart (standard orientation)
+# -------------------------------------------------------------
 
 def generate_daily_total_all_countries_bar(df: pd.DataFrame, baseline: int) -> str:
     """
-    Corrected daily total chart: categories=dates, TWO series (Baseline, Total Jobs).
+    Standard orientation: Date in first column, Baseline & Total Jobs series.
+    (If you decide to also transpose this, let me know.)
     """
     if 'DATE' not in df.columns or 'TOTAL_JOBS' not in df.columns:
         return "<p>Missing DATE or TOTAL_JOBS for daily totals.</p>"
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
     if daily.empty:
         return "<p>No daily totals data.</p>"
+
     rows = ["<tr><th>Date</th><th>Baseline</th><th>Total Jobs</th></tr>"]
     for _, r in daily.iterrows():
-        ds = r['DATE'].strftime('%Y-%m-%d')
-        rows.append(f"<tr><td>{ds}</td><td>{baseline}</td><td>{int(r['TOTAL_JOBS'])}</td></tr>")
+        date_str = r['DATE'].strftime('%Y-%m-%d')
+        rows.append(f"<tr><td>{date_str}</td><td>{baseline}</td><td>{int(r['TOTAL_JOBS'])}</td></tr>")
     table_html = "<table><tbody>" + "".join(rows) + "</tbody></table>"
+
     return f"""
 <h3>Daily Total Jobs (All Countries Combined)</h3>
 <ac:structured-macro ac:name="chart">
   <ac:parameter ac:name="title">Daily Total Jobs (All Countries)</ac:parameter>
   <ac:parameter ac:name="type">bar</ac:parameter>
+  <ac:parameter ac:name="orientation">vertical</ac:parameter>
   <ac:parameter ac:name="width">1100</ac:parameter>
   <ac:parameter ac:name="height">500</ac:parameter>
   <ac:parameter ac:name="legend">true</ac:parameter>
   <ac:parameter ac:name="dataDisplay">false</ac:parameter>
   <ac:parameter ac:name="showValues">false</ac:parameter>
   <ac:parameter ac:name="labelAngle">45</ac:parameter>
-  <ac:parameter ac:name="colors">#B22222,#2E8B57</ac:parameter>
-  <ac:parameter ac:name="seriesColors">#B22222,#2E8B57</ac:parameter>
   <ac:parameter ac:name="xLabel">Date</ac:parameter>
   <ac:parameter ac:name="yLabel">Jobs</ac:parameter>
+  <ac:parameter ac:name="colors">#B22222,#2E8B57</ac:parameter>
+  <ac:parameter ac:name="seriesColors">#B22222,#2E8B57</ac:parameter>
   <ac:rich-text-body>
     {table_html}
   </ac:rich-text-body>
 </ac:structured-macro>
 """
+
+# -------------------------------------------------------------
+# Variation (Baseline vs Daily) Line
+# -------------------------------------------------------------
 
 def generate_variation_with_baseline_line(df: pd.DataFrame, baseline: int) -> str:
     if 'DATE' not in df.columns or 'TOTAL_JOBS' not in df.columns:
@@ -298,20 +349,25 @@ def generate_variation_with_baseline_line(df: pd.DataFrame, baseline: int) -> st
 </ac:structured-macro>
 """
 
+# -------------------------------------------------------------
+# Daily Summary Table
+# -------------------------------------------------------------
+
 def generate_daily_summary_table(df: pd.DataFrame) -> str:
     if 'DATE' not in df.columns or 'TOTAL_JOBS' not in df.columns:
         return ""
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+    if daily.empty:
+        return "<p>No daily data.</p>"
     daily['DS'] = daily['DATE'].dt.strftime('%Y-%m-%d')
     rows = ["<tr><th>Date</th><th>Total Jobs</th></tr>"]
     for _, r in daily.iterrows():
         rows.append(f"<tr><td>{r['DS']}</td><td>{int(r['TOTAL_JOBS'])}</td></tr>")
     return "<h3>Daily Totals Table</h3><table class='wrapped'><tbody>" + "".join(rows) + "</tbody></table>"
 
-# (Optional) Region / Country detail charts if needed later (omitted for brevity)
-# Provide them again if you need the line-by-region or pie charts.
-
-# ------------- Confluence API --------------------
+# -------------------------------------------------------------
+# Confluence API Helpers
+# -------------------------------------------------------------
 
 def get_page_info(session: requests.Session, config: Dict) -> Tuple[Optional[str], Optional[int]]:
     try:
@@ -390,11 +446,13 @@ def test_connection(session: requests.Session, config: Dict) -> bool:
         logging.error(f"Connection test exception: {e}")
         return False
 
-# ------------- Single Publish --------------------
+# -------------------------------------------------------------
+# Single Publish
+# -------------------------------------------------------------
 
 def publish_to_confluence(report_file='task_usage_report_by_region.csv',
                           test_mode=False,
-                          skip_actual_upload=False):
+                          skip_actual_upload: bool = False):
     try:
         if not os.path.exists(report_file):
             logging.error(f"File {report_file} not found.")
@@ -408,6 +466,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
             return False
         if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
             config['PAGE_TITLE'] += "-TEST"
+
         monthly = _is_monthly_run(config)
         baseline = config.get('BASELINE', 1899206)
 
@@ -424,11 +483,11 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         if not ok:
             return False
 
-        # Sections
-        global_peaks = generate_global_monthly_top4_peaks(df, baseline) if monthly else "<!-- Monthly peaks suppressed (daily run) -->"
+        # Build sections
+        peaks_section = generate_global_monthly_top4_peaks_transposed(df, baseline) if monthly else "<!-- Monthly peaks suppressed (daily run) -->"
         daily_totals = generate_daily_total_all_countries_bar(df, baseline)
         variation_line = generate_variation_with_baseline_line(df, baseline)
-        daily_table = generate_daily_summary_table(df)
+        summary_table = generate_daily_summary_table(df)
 
         timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
         user = 'satish537'
@@ -436,10 +495,10 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
 <h1>Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
 <p><strong>Generated by:</strong> {user}</p>
-{global_peaks}
+{peaks_section}
 {daily_totals}
 {variation_line}
-{daily_table}
+{summary_table}
 <hr />
 <p><em>Note: This report shows the task usage data{' (TEST MODE)' if test_mode else ''}.</em></p>
 """
@@ -447,13 +506,17 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         if skip_actual_upload:
             logging.info("Simulation only (single).")
             return True
+
         page_id, version = get_page_info(session, config)
         return create_or_update_page(session, config, content, page_id, version)
+
     except Exception as e:
         logging.error(f"Error in single publish: {e}")
         return False
 
-# ------------- Multi-Country Publish --------------
+# -------------------------------------------------------------
+# Multi-Country Publish
+# -------------------------------------------------------------
 
 def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
                                 test_mode: bool = False,
@@ -486,9 +549,11 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
             df['COUNTRY'] = ctry
             frames.append(df)
             per_country.append((ctry, df))
+
         if not frames:
             logging.error("No country data to publish.")
             return False
+
         all_df = pd.concat(frames, ignore_index=True)
 
         session = None
@@ -500,17 +565,15 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
                 logging.error("Connection test failed.")
                 return False
 
-        # Global sections
-        global_peaks = generate_global_monthly_top4_peaks(all_df, baseline) if monthly else "<!-- Monthly peaks suppressed (daily run) -->"
+        global_peaks = generate_global_monthly_top4_peaks_transposed(all_df, baseline) if monthly else "<!-- Monthly peaks suppressed (daily run) -->"
         global_daily_totals = generate_daily_total_all_countries_bar(all_df, baseline)
         global_variation_line = generate_variation_with_baseline_line(all_df, baseline)
 
-        # Per-country peaks (only if monthly)
         per_country_sections = []
         if monthly:
             for ctry, df_ctry in per_country:
                 per_country_sections.append(f"<h3>{ctry}</h3>")
-                per_country_sections.append(generate_country_monthly_top4_peaks(df_ctry, ctry, baseline))
+                per_country_sections.append(generate_country_top4_peaks_transposed(df_ctry, ctry, baseline))
 
         timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
         user = 'satish537'
@@ -529,13 +592,17 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
         if skip_actual_upload:
             logging.info("Simulation only (multi-country).")
             return True
+
         page_id, version = get_page_info(session, config)
         return create_or_update_page(session, config, content, page_id, version)
+
     except Exception as e:
         logging.error(f"Error in multi-country publish: {e}")
         return False
 
-# ------------- CLI Harness -----------------------
+# -------------------------------------------------------------
+# CLI Harness
+# -------------------------------------------------------------
 
 if __name__ == "__main__":
     import argparse
