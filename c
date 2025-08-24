@@ -204,43 +204,38 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
     if peaks_df.empty:
         return f"<p>No data for {chart_title}.</p>"
     
-    # Sort by date to ensure consistent ordering
+    # Sort by date
     peaks_df = peaks_df.sort_values('DATE')
     
-    # Format dates for display (MM-DD format)
+    # Format dates as MM-DD
     date_format = peaks_df['DATE'].dt.strftime('%m-%d')
     
-    # Create header row with metric as first cell, then dates
-    chart_table_rows = ["<tr><th>Metric</th>"]
-    
-    # Add date headers
+    # First row: Date headers
+    header_row = "<tr><th>Date</th>"
     for date in date_format:
-        chart_table_rows[0] += f"<th>{date}</th>"
-    chart_table_rows[0] += "</tr>"
+        header_row += f"<th>{date}</th>"
+    header_row += "</tr>"
     
-    # Add Baseline row
+    # Second row: Baseline values
     baseline_row = "<tr><td>Baseline</td>"
     for _ in range(len(peaks_df)):
         baseline_row += f"<td>{int(baseline)}</td>"
     baseline_row += "</tr>"
-    chart_table_rows.append(baseline_row)
     
-    # Add Total Jobs row
+    # Third row: Total Jobs values
     jobs_row = "<tr><td>Total Jobs</td>"
     for _, row in peaks_df.iterrows():
         jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
     jobs_row += "</tr>"
-    chart_table_rows.append(jobs_row)
     
-    # Return complete chart macro with correct settings
     return f"""
 <ac:structured-macro ac:name="chart">
   <ac:parameter ac:name="title">{chart_title}</ac:parameter>
   <ac:parameter ac:name="type">bar</ac:parameter>
   <ac:parameter ac:name="orientation">vertical</ac:parameter>
   <ac:parameter ac:name="3D">true</ac:parameter>
-  <ac:parameter ac:name="width">900</ac:parameter>
-  <ac:parameter ac:name="height">480</ac:parameter>
+  <ac:parameter ac:name="width">600</ac:parameter>
+  <ac:parameter ac:name="height">400</ac:parameter>
   <ac:parameter ac:name="legend">true</ac:parameter>
   <ac:parameter ac:name="dataDisplay">true</ac:parameter>
   <ac:parameter ac:name="stacked">false</ac:parameter>
@@ -250,12 +245,12 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
   <ac:parameter ac:name="labelAngle">45</ac:parameter>
   <ac:parameter ac:name="xLabel">Date</ac:parameter>
   <ac:parameter ac:name="yLabel">Jobs</ac:parameter>
-  <ac:parameter ac:name="colors">#B22222,#6B8E23</ac:parameter>
-  <ac:parameter ac:name="seriesColors">#B22222,#6B8E23</ac:parameter>
   <ac:rich-text-body>
     <table>
       <tbody>
-        {"".join(chart_table_rows)}
+        {header_row}
+        {baseline_row}
+        {jobs_row}
       </tbody>
     </table>
   </ac:rich-text-body>
@@ -538,8 +533,8 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         variation_line = generate_variation_line(df, baseline)
         summary = generate_daily_summary(df)
 
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-        user = 'satish537'
+        timestamp = "2025-08-24 12:56:43"  # Using provided timestamp
+        user = "satish537"  # Using provided user
         content = f"""
 <h1>Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
@@ -629,8 +624,8 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
                 per_country_sections.append(f"<h3>{ctry}</h3>")
                 per_country_sections.append(generate_country_peaks_section(df_ctry, ctry, baseline))
 
-        timestamp = "2025-08-24 12:42:22"  # From user's request
-        user = 'satish537'  # From user's request
+        timestamp = "2025-08-24 12:56:43"  # Using provided timestamp
+        user = "satish537"  # Using provided user
         content = f"""
 <h1>Multi-Country Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
