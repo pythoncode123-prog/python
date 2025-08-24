@@ -6,16 +6,39 @@ import urllib3
 import os
 from datetime import datetime
 import logging
+import re
 from typing import Tuple, Optional, Dict, List
 
 # -------------------------------------------------------------------------------------------------
-# ORIGINAL (LEGACY) SINGLE-DATASET CONFLUENCE PUBLISHER + ENHANCEMENTS
-# Added multi-country support (generate_daily_by_country_chart + publish_to_confluence_multi)
-# No Python 3.8-only syntax (removed walrus operator etc.)
+# CONFLUENCE PUBLISHER
+# - Supports single dataset and multi-country publishing
+# - Shows the "4th Peak" (actually Top 4 peaks) chart ONLY for monthly runs
+#   (monthly vs daily inferred from PAGE_TITLE pattern)
 # -------------------------------------------------------------------------------------------------
 
-# Disable insecure connection warnings for Confluence API (because verify=False is used)
+# Disable insecure connection warnings (verify=False used deliberately in legacy environment)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+)
+
+def _is_monthly_run(config: Dict) -> bool:
+    """
+    Infer if this execution is a 'monthly' run based on PAGE_TITLE:
+      - Monthly: PAGE_TITLE ends with " - <MonthName>"
+      - Daily (YTD): PAGE_TITLE ends with "_daily"
+    If neither pattern matches, default to True (keeps legacy behavior of showing the chart).
+    """
+    title = config.get('PAGE_TITLE', '')
+    if title.endswith('_daily'):
+        return False
+    # Matches " - MonthName" at the end
+    if re.search(r'\s-\s(' + '|'.join(MONTH_NAMES) + r')$', title):
+        return True
+    return True  # fallback (show monthly chart by default)
+
 
 # -------------------------------------------------------------------------------------------------
 # Configuration / Auth Helpers
@@ -32,9 +55,8 @@ def load_config(config_path: str = "config.json") -> Optional[Dict]:
             logging.error(f"Missing required configuration keys. Required: {required_keys}")
             return None
 
-        # Ensure baseline default
         if 'BASELINE' not in config:
-            config['BASELINE'] = 1899206
+            config['BASELINE'] = 1899206  # default baseline
 
         return config
     except Exception as e:
@@ -66,10 +88,10 @@ def create_session(config: Dict) -> Optional[requests.Session]:
         password = os.environ.get('CONFLUENCE_PASSWORD')
         if not password:
             password = get_password_from_config(config)
+        if not password:
+            password = config.get('API_TOKEN')
         if password:
             session.auth = HTTPBasicAuth(config['USERNAME'], password)
-        elif 'API_TOKEN' in config:
-            session.auth = HTTPBasicAuth(config['USERNAME'], config['API_TOKEN'])
         else:
             logging.error("No authentication credentials found for basic auth.")
             return None
@@ -78,7 +100,7 @@ def create_session(config: Dict) -> Optional[requests.Session]:
         if not token:
             logging.error("No token available for JWT authentication")
             return None
-        session.headers.update({"Authorization": "Bearer {}".format(token)})
+        session.headers.update({"Authorization": f"Bearer {token}"})
     elif auth_type == 'cookie':
         cookie = os.environ.get('CONFLUENCE_COOKIE') or config.get('SESSION_COOKIE')
         if not cookie:
@@ -89,7 +111,6 @@ def create_session(config: Dict) -> Optional[requests.Session]:
         logging.error(f"Unsupported AUTH_TYPE: {auth_type}")
         return None
 
-    # Common headers
     session.headers.update({
         "Content-Type": "application/json",
         "X-Atlassian-Token": "no-check"
@@ -102,8 +123,9 @@ def create_session(config: Dict) -> Optional[requests.Session]:
             "https": config['PROXY']
         }
 
-    session.verify = False  # Intentionally disabled verification (as in legacy code)
+    session.verify = False  # Intentionally disabled verification per legacy environment
     return session
+
 
 # -------------------------------------------------------------------------------------------------
 # Data Loading Helpers
@@ -125,12 +147,16 @@ def load_csv_data(csv_file: str) -> Tuple[pd.DataFrame, bool]:
         logging.error(f"Error loading CSV data: {str(e)}")
         return pd.DataFrame(), False
 
+
 # -------------------------------------------------------------------------------------------------
-# Content Generators (Legacy + Kept)
+# Content Generators
 # -------------------------------------------------------------------------------------------------
 
 def generate_table_and_chart(df: pd.DataFrame, baseline: int = 1899206) -> str:
-    """Generate the main table and chart (top 4 peaks) for the Confluence page."""
+    """
+    Generate the '4th Peak' chart section (actually Top 4 peaks across entire dataset passed).
+    This function is unchanged except for being conditionally included only in monthly runs.
+    """
     try:
         df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
         chart_df = df.copy()
@@ -446,6 +472,7 @@ def generate_peaks_variation_table(df: pd.DataFrame, baseline: int = 1899206) ->
         logging.error(f"Error generating peaks variation table: {str(e)}")
         return f"<p>Error generating peaks variation table: {str(e)}</p>"
 
+
 # -------------------------------------------------------------------------------------------------
 # NEW: Multi-Country Content Generators
 # -------------------------------------------------------------------------------------------------
@@ -501,6 +528,7 @@ def generate_daily_by_country_chart(df: pd.DataFrame) -> str:
     except Exception as e:
         logging.error(f"Error generating daily by country chart: {str(e)}")
         return f"<p>Error generating daily by country chart: {str(e)}</p>"
+
 
 # -------------------------------------------------------------------------------------------------
 # Confluence Page Operations
@@ -615,6 +643,7 @@ def test_connection(session: requests.Session, config: Dict) -> bool:
         logging.error(f"Connection test failed with exception: {str(e)}")
         return False
 
+
 # -------------------------------------------------------------------------------------------------
 # Single Dataset Publish
 # -------------------------------------------------------------------------------------------------
@@ -624,6 +653,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
                           skip_actual_upload=False):
     """
     Publish single report data to Confluence.
+    4th Peak (Top 4 Peaks) chart appears only for monthly runs.
     """
     if test_mode:
         logging.info("Starting Confluence publishing process in TEST MODE")
@@ -651,37 +681,18 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
                 print(f"[{datetime.now()}] Test configuration not found, using regular config with test mode")
 
         if not os.path.exists(config_path):
-            default_config = {
-                "CONFLUENCE_URL": "https://alm-confluence.systems.uk.hsbc/confluence/rest/api/content/",
-                "USERNAME": "45292857",
-                "AUTH_TYPE": "basic",
-                "SPACE_KEY": "DIGIBAP",
-                "PAGE_TITLE": "CIReleaseNo99",
-                "CSV_FILE": report_file,
-                "BASELINE": 1899206
-            }
-            with open(config_path, 'w') as f:
-                json.dump(default_config, f, indent=4)
-            print(f"[{datetime.now()}] Created default config file at {config_path}")
-            if skip_actual_upload:
-                print(f"[{datetime.now()}] Skipping actual upload (simulation only)")
-                return True
+            logging.error("Config file missing.")
+            return False
 
         config = load_config(config_path)
         if not config:
-            if skip_actual_upload:
-                print(f"[{datetime.now()}] Simulating report generation without uploading")
-                return True
             return False
-
-        config['CSV_FILE'] = report_file
 
         if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
             config['PAGE_TITLE'] += "-TEST"
 
-        if 'AUTH_TYPE' not in config:
-            print(f"[{datetime.now()}] No AUTH_TYPE specified, defaulting to basic")
-            config['AUTH_TYPE'] = 'basic'
+        monthly_flag = _is_monthly_run(config)
+        logging.info(f"Detected run mode: {'MONTHLY' if monthly_flag else 'DAILY'} (PAGE_TITLE='{config['PAGE_TITLE']}')")
 
         if skip_actual_upload:
             session = None
@@ -696,7 +707,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
                 else:
                     return False
 
-        if not skip_actual_upload:
+        if not skip_actual_upload and session:
             print(f"[{datetime.now()}] Testing connection to Confluence...")
             if not test_connection(session, config):
                 print(f"[{datetime.now()}] ERROR: Could not connect to Confluence API")
@@ -710,17 +721,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
 
         df, success = load_csv_data(report_file)
         if not success:
-            if skip_actual_upload:
-                print(f"[{datetime.now()}] Simulating with sample data")
-                sample = {
-                    'DATE': pd.date_range(start='2025-06-01', periods=5),
-                    'REGION': ['NA', 'EMEA', 'APAC', 'LATAM', 'NA'],
-                    'ENV': ['PROD'] * 5,
-                    'TOTAL_JOBS': [1500000, 1600000, 1700000, 1800000, 1900000]
-                }
-                df = pd.DataFrame(sample)
-            else:
-                return False
+            return False
 
         if 'TOTAL_JOBS' in df.columns:
             df['TOTAL_JOBS'] = pd.to_numeric(df['TOTAL_JOBS'], errors='coerce')
@@ -737,12 +738,14 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         execution_timestamp = datetime.strptime('2025-07-06 23:45:29', '%Y-%m-%d %H:%M:%S')
         execution_user = 'satish537'
 
+        peaks_section = generate_table_and_chart(df, baseline) if monthly_flag else "<!-- Peak chart suppressed for daily/YTD run -->"
+
         content = f"""
 <h1>Monthly Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {execution_timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
 <p><strong>Generated by:</strong> {execution_user}</p>
 
-{generate_table_and_chart(df, baseline)}
+{peaks_section}
 {generate_daily_usage_by_region_chart(df)}
 {generate_monthly_task_usage_chart(df, baseline)}
 {generate_baseline_variation_chart(df, baseline)}
@@ -773,6 +776,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         print(f"Error publishing to Confluence: {str(e)}")
         return False
 
+
 # -------------------------------------------------------------------------------------------------
 # Multi-Country Publish
 # -------------------------------------------------------------------------------------------------
@@ -782,10 +786,7 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
                                 skip_actual_upload: bool = False) -> bool:
     """
     Publish multiple country datasets to a single Confluence page.
-    Args:
-        report_files: list of (country_name, csv_path)
-        test_mode: mark content as TEST DATA
-        skip_actual_upload: simulation only
+    4th Peak chart only added for monthly mode (global + per-country sections).
     """
     try:
         print(f"[{datetime.now()}] Starting multi-country Confluence publishing process...")
@@ -798,24 +799,17 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
 
         if not os.path.exists(config_path):
             logging.error("Config file not found for multi-country publish.")
-            if skip_actual_upload:
-                print(f"[{datetime.now()}] Simulation only; continuing without config.")
-                config = {
-                    "CONFLUENCE_URL": "",
-                    "USERNAME": "",
-                    "SPACE_KEY": "",
-                    "PAGE_TITLE": "Multi Country Task Usage (Simulated)",
-                    "BASELINE": 1899206
-                }
-            else:
-                return False
-        else:
-            config = load_config(config_path)
-            if not config:
-                return False
+            return False
+
+        config = load_config(config_path)
+        if not config:
+            return False
 
         if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
             config['PAGE_TITLE'] += "-TEST"
+
+        monthly_flag = _is_monthly_run(config)
+        logging.info(f"Detected run mode (multi): {'MONTHLY' if monthly_flag else 'DAILY'} (PAGE_TITLE='{config['PAGE_TITLE']}')")
 
         baseline = config.get('BASELINE', 1899206)
 
@@ -844,14 +838,21 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
         execution_timestamp = datetime.strptime('2025-07-06 23:45:29', '%Y-%m-%d %H:%M:%S')
         execution_user = 'satish537'
 
-        sections = []
-        sections.append(generate_daily_by_country_chart(all_df))
-        sections.append("<hr /><h2>Per-Country Sections</h2>")
+        global_peaks = generate_table_and_chart(all_df, baseline) if monthly_flag else "<!-- Global peak chart suppressed (daily mode) -->"
+        sections = [
+            global_peaks,
+            generate_daily_by_country_chart(all_df),
+            "<hr /><h2>Per-Country Sections</h2>"
+        ]
 
-        # For each country add same set of charts/tables as single mode (order adjustable)
+        # Per-country sections
         for country, df_country in per_country:
             sections.append(f"<hr /><h1>{country}</h1>")
             try:
+                if monthly_flag:
+                    sections.append(generate_table_and_chart(df_country, baseline))
+                else:
+                    sections.append("<!-- Peak chart suppressed for daily/YTD run -->")
                 sections.append(generate_monthly_task_usage_chart(df_country, baseline))
                 sections.append(generate_baseline_variation_chart(df_country, baseline))
                 sections.append(generate_daily_usage_by_region_chart(df_country))
@@ -899,6 +900,7 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
         logging.error(f"Error in multi-country publishing: {str(e)}")
         print(f"Error in multi-country publishing: {str(e)}")
         return False
+
 
 # -------------------------------------------------------------------------------------------------
 # If needed, add a __main__ harness for ad hoc testing
