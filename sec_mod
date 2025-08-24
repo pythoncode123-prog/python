@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+import os
+import base64
+from cryptography.fernet import Fernet
+import traceback
+
+class SecureConfig:
+    # Key file path relative to the script's directory
+    KEY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "secure.key")
+    
+    @classmethod
+    def generate_key(cls):
+        """Generate a new Fernet key and save it to KEY_FILE."""
+        try:
+            print(f"Generating new key in {cls.KEY_FILE}")
+            key = Fernet.generate_key()
+            
+            # Create directory if it doesn't exist
+            directory = os.path.dirname(cls.KEY_FILE)
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+                
+            # Write key to file
+            with open(cls.KEY_FILE, 'wb') as key_file:
+                key_file.write(key)
+                
+            print(f"Key written successfully ({len(key)} bytes)")
+            return key
+        except Exception as e:
+            print(f"Error generating key: {str(e)}")
+            traceback.print_exc()
+            return None
+    
+    @classmethod
+    def _load_key(cls):
+        """Load the key from KEY_FILE."""
+        if not os.path.exists(cls.KEY_FILE):
+            print(f"Key file not found: {cls.KEY_FILE}")
+            return cls.generate_key()
+        
+        try:
+            print(f"Loading key from {cls.KEY_FILE}")
+            with open(cls.KEY_FILE, 'rb') as key_file:
+                key = key_file.read()
+                
+            if not key:
+                print("Key file is empty. Regenerating...")
+                return cls.generate_key()
+                
+            print(f"Key loaded successfully ({len(key)} bytes)")
+            return key
+        except Exception as e:
+            print(f"Error loading key: {str(e)}")
+            traceback.print_exc()
+            return None
+    
+    @classmethod
+    def encrypt_password(cls, password):
+        """Encrypt the password using Fernet encryption."""
+        try:
+            key = cls._load_key()
+            if not key:
+                return None
+                
+            # Make sure password is bytes
+            if isinstance(password, str):
+                password = password.encode()
+                
+            # Create Fernet cipher with the key and encrypt
+            cipher = Fernet(key)
+            encrypted = cipher.encrypt(password)
+            
+            # Return as string for storage in config
+            return encrypted.decode()
+        except Exception as e:
+            print(f"Encryption error: {str(e)}")
+            traceback.print_exc()
+            return None
+    
+    @classmethod
+    def decrypt_password(cls, encrypted_password):
+        """Decrypt the password using Fernet decryption."""
+        try:
+            key = cls._load_key()
+            if not key:
+                return None
+                
+            # Make sure encrypted password is bytes
+            if isinstance(encrypted_password, str):
+                encrypted_password = encrypted_password.encode()
+                
+            # Create Fernet cipher with the key and decrypt
+            cipher = Fernet(key)
+            decrypted = cipher.decrypt(encrypted_password)
+            
+            # Return as string
+            return decrypted.decode()
+        except Exception as e:
+            print(f"Decryption error: {str(e)}")
+            traceback.print_exc()
+            return None
