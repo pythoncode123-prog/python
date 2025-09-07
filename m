@@ -3,7 +3,7 @@
 Main workflow launcher.
 
 Key features:
-- Single or multi-country execution
+- Single or multi-country execution (now supports auto-discovery of db_*.ini files in config/)
 - Date range modes: --monthly (previous month), --daily (YTD)
 - Page title updates now target config.json (single source of truth) (Option 2)
 - Query date range updates preserve the original query formatting (no column tampering)
@@ -20,6 +20,7 @@ import calendar
 from datetime import datetime, timedelta
 import argparse
 import tempfile
+import glob
 
 # Make project root importable
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +28,7 @@ sys.path.append(PROJECT_ROOT)
 
 from src.workflow import run_workflow, run_workflow_multi  # noqa: E402
 from lib.secure_config import SecureConfig  # noqa: E402
+from lib import db_utils  # <-- required for direct calls in new block
 
 # ---------------------------------------------------------------------------
 # Constants / Configuration Paths
@@ -280,6 +282,41 @@ def update_confluence_page_title(config_path, suffix, is_daily=False):
 
 
 # ---------------------------------------------------------------------------
+# Multi-country direct DB/CSV extraction (NEW FUNCTIONALITY)
+# ---------------------------------------------------------------------------
+
+def run_multi_country_db_export(query_path, output_dir=".", execution_timestamp=None):
+    """
+    Auto-detect all db_*.ini files in config/, execute query for each, output to data_<country>.csv.
+    """
+    ini_files = glob.glob(os.path.join(PROJECT_ROOT, "config", "db_*.ini"))
+    if not ini_files:
+        logging.error("No country INI files found in 'config' directory. Exiting.")
+        return 1
+
+    # Optionally update date range in query for all, creating temp query for each
+    for ini_path in ini_files:
+        country = os.path.splitext(os.path.basename(ini_path))[0].split('_')[-1]
+        base_query_file = query_path
+        # Prepare per-country query file if monthly/daily mode chosen
+        query_file_to_use = base_query_file
+        # If you want to update date range per country, you can add logic here (like in multi-country block above)
+        output_csv = os.path.join(output_dir, f"data_{country}.csv")
+        logging.info(f"--- Processing country '{country}' using INI file '{ini_path}' ---")
+        success = db_utils.sql_to_csv(
+            config_file=ini_path,
+            query_file=query_file_to_use,
+            output_csv=output_csv,
+            execution_timestamp=execution_timestamp
+        )
+        if success:
+            logging.info(f"Data for {country} written to {output_csv}")
+        else:
+            logging.error(f"Failed to process {country} ({ini_path})")
+    logging.info("All countries processed.")
+    return 0
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -290,13 +327,14 @@ def main():
     parser.add_argument("--monthly", action="store_true", help="Use previous month date range in SQL query")
     parser.add_argument("--daily", action="store_true", help="Use year-to-date range in SQL query")
     parser.add_argument("--countries-config", help="Path to countries JSON to run multi-country workflow")
+    parser.add_argument("--multi-country-db", action="store_true", help="Run DB export for all db_*.ini in config/ (writes data_<country>.csv)")
     args = parser.parse_args()
 
     setup_logging()
     os.makedirs('config', exist_ok=True)
 
     # Basic presence checks for single-country DB files if not test & not multi
-    if not args.test and not args.countries_config:
+    if not args.test and not args.countries_config and not args.multi_country_db:
         if not os.path.exists(CONFIG_FILE):
             logging.error(f"Config file {CONFIG_FILE} not found.")
             return 1
@@ -326,7 +364,22 @@ def main():
         return 1
 
     # -----------------------------------------------------------------------
-    # Multi-country Flow
+    # Multi-country DB Extraction Flow (NEW FUNCTIONALITY)
+    # -----------------------------------------------------------------------
+    if args.multi_country_db:
+        # Optionally update query date range for each INI file if --monthly/--daily
+        query_path = QUERY_FILE
+        # If you want per-country queries with updated date range, add logic here
+        # For now, use shared query (already updated if single-country block ran)
+        if args.monthly or args.daily:
+            # Update date range in shared query.sql before running for all countries
+            if date_range:
+                sd, ed, _ = date_range
+                update_query_dates_preserve(query_path, sd, ed)
+        return run_multi_country_db_export(query_path, output_dir=".", execution_timestamp=EXECUTION_TIMESTAMP)
+
+    # -----------------------------------------------------------------------
+    # Multi-country Flow (countries.json)
     # -----------------------------------------------------------------------
     if args.countries_config:
         try:
