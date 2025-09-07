@@ -15,15 +15,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from src.workflow import run_workflow
 from lib.secure_config import SecureConfig
 
-# Configuration
 CONFIG_FILE = 'config/config.ini'
 QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
-EXECUTION_TIMESTAMP = datetime.strptime('2025-07-07 00:13:56', '%Y-%m-%d %H:%M:%S')  # Updated timestamp
+EXECUTION_TIMESTAMP = datetime.strptime('2025-07-07 00:13:56', '%Y-%m-%d %H:%M:%S')
 EXECUTION_USER = 'satish537'
 
 def setup_logging():
-    """Set up logging configuration."""
     log_file = f"workflow_{EXECUTION_TIMESTAMP.strftime('%Y%m%d_%H%M%S')}.log"
     logging.basicConfig(
         level=logging.INFO,
@@ -35,18 +33,13 @@ def setup_logging():
     )
 
 def check_password_available():
-    """Check if password is available either in environment or as encrypted in config."""
-    # Check environment variable first
     if os.environ.get('CONFLUENCE_PASSWORD'):
         return True
-
-    # Check for encrypted password in config
     if os.path.exists("config.json"):
         try:
             with open("config.json", 'r') as f:
                 config = json.load(f)
             if 'PASSWORD_ENCRYPTED' in config:
-                # Check if key file exists
                 if os.path.exists(SecureConfig.KEY_FILE):
                     return True
         except Exception:
@@ -54,42 +47,26 @@ def check_password_available():
     return False
 
 def get_previous_month_date_range():
-    """Get the start and end date of the previous month."""
     today = datetime.now()
-    
-    # Calculate first day of current month
     first_day_of_current_month = datetime(today.year, today.month, 1)
-    
-    # Calculate last day of previous month (one day before first day of current month)
     last_day_of_previous_month = first_day_of_current_month - timedelta(days=1)
-    
-    # Calculate first day of previous month
     first_day_of_previous_month = datetime(last_day_of_previous_month.year, last_day_of_previous_month.month, 1)
-    
     start_date_str = first_day_of_previous_month.strftime('%Y-%m-%d 00:00:00')
     end_date_str = last_day_of_previous_month.strftime('%Y-%m-%d 23:59:59')
-    
-    # Get month name for Confluence page
     month_name = calendar.month_name[last_day_of_previous_month.month]
-    
     logging.info(f"Previous month date range: {start_date_str} to {end_date_str} ({month_name})")
     return start_date_str, end_date_str, month_name
 
 def get_ytd_date_range():
-    """Get the date range from start of current year to today."""
     today = datetime.now()
     start_of_year = datetime(today.year, 1, 1)
-    
     start_date_str = start_of_year.strftime('%Y-%m-%d 00:00:00')
     today_str = today.strftime('%Y-%m-%d 23:59:59')
-    
     logging.info(f"Year-to-date range: {start_date_str} to {today_str}")
     return start_date_str, today_str
 
 def update_query_with_date_range(query_path, start_date, end_date):
-    """Update the query.sql file with specified date range and REMOVE country field."""
     try:
-        # Create a new SQL query with proper date range WITHOUT country field
         new_query = f"""-- Query updated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by {EXECUTION_USER}
 -- Date range: {start_date} to {end_date}
 
@@ -107,7 +84,6 @@ WHERE
 GROUP BY TO_CHAR(net_report.net_date, 'YYYY-MM-DD')
 ORDER BY TO_CHAR(net_report.net_date, 'YYYY-MM-DD');
 """
-        # Create a backup of the original query first
         backup_path = f"{query_path}.bak"
         if os.path.exists(query_path):
             with open(query_path, 'r') as f:
@@ -115,75 +91,44 @@ ORDER BY TO_CHAR(net_report.net_date, 'YYYY-MM-DD');
             with open(backup_path, 'w') as f:
                 f.write(original_query)
             logging.info(f"Created backup of original query at {backup_path}")
-
-        # Write the new query
         with open(query_path, 'w') as f:
             f.write(new_query)
-            
         logging.info(f"Successfully created new query with date range: {start_date} to {end_date}")
-        logging.info("COUNTRY field removed from query")
-        
         return True
     except Exception as e:
         logging.error(f"Error updating query file: {str(e)}")
         return False
 
 def update_confluence_page_title(config_path, suffix, is_daily=False):
-    """
-    Update the Confluence page title in the config file.
-    
-    Args:
-        config_path: Path to the config file
-        suffix: Suffix to add to the page title
-        is_daily: If True, append suffix as "_daily", otherwise use " - suffix"
-    """
     try:
-        # Check if file exists
         if not os.path.exists(config_path):
             logging.error(f"Config file not found: {config_path}")
             return False
-        
-        # Read the entire file content
         with open(config_path, 'r') as f:
             content = f.read()
-        
-        # Use regex to find and update the PAGE_TITLE parameter
         pattern = r'(PAGE_TITLE\s*=\s*["\'])([^"\']*?)(["\'])'
-        
         match = re.search(pattern, content)
         if match:
-            # Get the current title and strip any existing suffix
             current_title = match.group(2)
-            
-            # Remove any existing suffix pattern (both formats)
-            base_title = re.sub(r'_daily$', '', current_title)  # Remove _daily if exists
-            base_title = re.sub(r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$', '', base_title)  # Remove month/YTD suffix
-            
-            # Create new title with appropriate suffix format
+            base_title = re.sub(r'_daily$', '', current_title)
+            base_title = re.sub(r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$', '', base_title)
             if is_daily:
                 new_title = f"{base_title}_daily"
             else:
                 new_title = f"{base_title} - {suffix}"
-            
-            # Replace in the content
             updated_content = re.sub(pattern, r'\1' + new_title + r'\3', content)
-            
-            # Write back to file
             with open(config_path, 'w') as f:
                 f.write(updated_content)
-                
             logging.info(f"Successfully updated Confluence page title to: {new_title}")
             return True
         else:
             logging.error(f"Could not find PAGE_TITLE parameter in {config_path}")
             return False
-            
     except Exception as e:
         logging.error(f"Error updating Confluence page title: {str(e)}")
         return False
 
 def main():
-    """Main entry point."""
     parser = argparse.ArgumentParser(description="Run data workflow")
     parser.add_argument("--test", action="store_true", help="Run in test mode using predefined test CSV")
     parser.add_argument("--no-publish", action="store_true", help="Skip actual publishing to Confluence")
@@ -195,22 +140,18 @@ def main():
     setup_logging()
     os.makedirs('config', exist_ok=True)
 
-    # If not in test mode, check if config files exist
     if not args.test and not args.countries_config:
         if not os.path.exists(CONFIG_FILE):
             logging.error(f"Config file {CONFIG_FILE} not found.")
             return 1
-        
         if not os.path.exists(QUERY_FILE):
             logging.error(f"Query file {QUERY_FILE} not found.")
             return 1
-    
-    # Handle date range flags (monthly and daily)
-    # Ensure only one flag is used
+
     if args.monthly and args.daily:
         logging.error("Cannot use both --monthly and --daily flags together. Please choose one.")
         return 1
-    
+
     date_range = None
     month_name = None
     if args.monthly:
@@ -264,17 +205,18 @@ def main():
 
             logging.info(f"Running workflow for country: {name}")
             run_workflow(cfg_path, qry_path_use, out_csv, EXECUTION_TIMESTAMP, EXECUTION_USER,
-                         test_mode=args.test, publish_test=False)  # Only produce CSVs, don't publish yet
+                         test_mode=args.test, publish_test=False)  # Just produce CSVs, don't publish yet
 
-        # --- AGGREGATION STEP ---
+        # After all countries processed, aggregate and publish
         logging.info("Aggregating all country CSVs...")
         from lib.csv_processor import CSVProcessor
         processor = CSVProcessor(EXECUTION_TIMESTAMP, EXECUTION_USER)
-        processor.process_all_files()  # This processes all data_*.csv files and creates region reports
+        processor.process_all_files()  # This will process all data_*.csv files and create reports
 
-        # --- PUBLISHING STEP ---
+        # Now publish to Confluence (if your original code includes this step)
         try:
             from lib.confluence_publisher import publish_to_confluence
+            # Publish the region summary report
             publish_success = publish_to_confluence(
                 report_file="task_usage_report_by_region.csv",
                 test_mode=args.test,
@@ -300,7 +242,6 @@ def main():
         else:
             logging.info(f"Confluence page title updated to include: {month_name}")
         logging.info(f"Query updated to use {month_name} date range by {EXECUTION_USER}")
-    
     elif args.daily:
         start_date, end_date, _ = date_range
         if not update_query_with_date_range(QUERY_FILE, start_date, end_date):
@@ -312,7 +253,6 @@ def main():
             logging.info("Confluence page title updated to append: _daily")
         logging.info(f"Query updated to use year-to-date range by {EXECUTION_USER}")
 
-    # Check for password availability if publishing
     if not args.no_publish and not check_password_available():
         print("No Confluence authentication credentials found.")
         print("Please either:")
@@ -321,7 +261,6 @@ def main():
         print("3. Use --no-publish flag to skip publishing")
         return 1
 
-    # Run the workflow
     run_workflow(
         CONFIG_FILE,
         QUERY_FILE,
@@ -329,9 +268,8 @@ def main():
         EXECUTION_TIMESTAMP,
         EXECUTION_USER,
         test_mode=args.test,
-        publish_test=not args.no_publish  # Whether to publish in test mode
+        publish_test=not args.no_publish
     )
-    
     return 0
 
 if __name__ == "__main__":
