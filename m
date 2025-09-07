@@ -48,7 +48,7 @@ QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
 
 # Current execution metadata - UPDATED TO CURRENT TIME
-EXECUTION_TIMESTAMP = datetime.strptime('2025-09-07 23:48:22', '%Y-%m-%d %H:%M:%S')
+EXECUTION_TIMESTAMP = datetime.strptime('2025-09-07 23:55:27', '%Y-%m-%d %H:%M:%S')
 EXECUTION_USER = 'satish537'
 
 
@@ -322,6 +322,59 @@ def find_config_file(preferred_name="config.json"):
 
 
 # ---------------------------------------------------------------------------
+# Confluence Publisher Wrapper
+# ---------------------------------------------------------------------------
+
+def publish_with_correct_config(report_file, test_mode=False, skip_actual_upload=False, original_cwd=None):
+    """
+    Wrapper for publish_to_confluence that ensures config.json is found correctly.
+    """
+    if original_cwd is None:
+        original_cwd = os.getcwd()
+    
+    # Save current directory
+    current_dir = os.getcwd()
+    
+    try:
+        # Change to original directory for publishing
+        os.chdir(original_cwd)
+        
+        # Find the correct config file
+        config_path = find_config_file("config_test.json" if test_mode else "config.json")
+        if not config_path:
+            # Fallback to any config.json
+            config_path = find_config_file("config.json")
+        
+        if not config_path:
+            logging.error("Cannot find any config file for Confluence publishing")
+            return False
+        
+        # Copy config to current directory with expected name
+        expected_name = "config_test.json" if test_mode else "config.json"
+        temp_config = os.path.join(current_dir, expected_name)
+        if not os.path.exists(temp_config):
+            shutil.copy2(config_path, temp_config)
+            logging.info(f"Copied config for publishing: {temp_config}")
+        
+        # Change back to where the report file is
+        os.chdir(current_dir)
+        
+        # Now publish
+        return publish_to_confluence(
+            report_file=report_file,
+            test_mode=test_mode,
+            skip_actual_upload=skip_actual_upload
+        )
+        
+    except Exception as e:
+        logging.error(f"Error in publish_with_correct_config: {e}")
+        return False
+    finally:
+        # Always return to current directory
+        os.chdir(current_dir)
+
+
+# ---------------------------------------------------------------------------
 # Temporary Directory Management
 # ---------------------------------------------------------------------------
 
@@ -515,21 +568,23 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
             shutil.copy2(detailed_report, main_detailed_path)
             logging.info(f"Copied detailed report to {main_detailed_path}")
         
-        # Change back to original directory for publishing
-        os.chdir(original_cwd)
-        
         # Publish aggregated report if not skipping
         if publish_test:
             logging.info("Publishing aggregated report to Confluence...")
             
-            publish_success = publish_to_confluence(
+            # Use the wrapper function that handles config file paths correctly
+            publish_success = publish_with_correct_config(
                 report_file=aggregated_report,
                 test_mode=test_mode,
-                skip_actual_upload=False
+                skip_actual_upload=False,
+                original_cwd=original_cwd
             )
             if not publish_success:
                 logging.error("Failed to publish to Confluence")
                 return False
+        
+        # Change back to original directory
+        os.chdir(original_cwd)
         
         # Log summary of results
         logging.info("="*60)
