@@ -1,0 +1,139 @@
+import pyodbc
+import csv
+import configparser
+import logging
+from datetime import datetime
+import os
+import oracledb
+
+def load_config(config_path):
+    """Load database configuration from file (plain text password only)."""
+    logging.info(f"Loading database config from {config_path}")
+    
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    
+    if 'DATABASE' not in config:
+        logging.error(f"No [DATABASE] section found in {config_path}")
+        return None
+        
+    db_config = config['DATABASE']
+    
+    username = db_config.get('Username', 'unknown')
+    password = db_config.get('Password', '')
+    
+    db_params = {
+        'host': db_config.get('DBHost', ''),
+        'port': db_config.get('Port', '1521'),
+        'service': db_config.get('ServiceName', ''),
+        'schema': db_config.get('SchemaName', ''),
+        'user': username,
+        'password': password
+    }
+    
+    logging.info(f"DB connection parameters:")
+    logging.info(f"  Host: {db_params['host']}")
+    logging.info(f"  Port: {db_params['port']}")
+    logging.info(f"  Service: {db_params['service']}")
+    logging.info(f"  User: {db_params['user']}")
+    
+    return db_params
+
+def connect_oracle(cfg):
+    """Connect to Oracle database using configuration."""
+    if not cfg:
+        logging.error("Invalid database configuration")
+        return None
+        
+    try:
+        dsn = oracledb.makedsn(
+            cfg['host'],
+            int(cfg['port']),
+            service_name=cfg['service']
+        )
+        
+        logging.info(f"Connecting to Oracle as {cfg['user']}")
+        conn = oracledb.connect(
+            user=cfg['user'],
+            password=cfg['password'],
+            dsn=dsn
+        )
+        logging.info("Database connection successful")
+        return conn
+    except oracledb.DatabaseError as e:
+        error_obj = e.args[0]
+        if hasattr(error_obj, 'code'):
+            logging.error(f"Oracle Error {error_obj.code}: {error_obj.message}")
+        else:
+            logging.error(f"Oracle Error: {str(e)}")
+        return None
+    except Exception as e:
+        logging.error(f"Error connecting to database: {str(e)}")
+        return None
+
+def execute_query_and_write_csv(conn, query, csv_path):
+    """Execute query and write results to CSV file."""
+    cursor = conn.cursor()
+    try:
+        statements = [stmt.strip() for stmt in query.split(';') if stmt.strip()]
+        for stmt in statements[:-1]:
+            cursor.execute(stmt)
+        cursor.execute(statements[-1])
+        columns = [column[0] for column in cursor.description]
+        with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(columns)
+            row_count = 0
+            for row in cursor:
+                writer.writerow(row)
+                row_count += 1
+        logging.info(f"Wrote {row_count} rows to {csv_path}")
+        return True
+    except Exception as e:
+        logging.error(f"Error executing query: {str(e)}")
+        return False
+    finally:
+        if cursor:
+            cursor.close()
+
+def sql_to_csv(config_file, query_file, output_csv, execution_timestamp=None):
+    """Execute SQL and export to CSV."""
+    logging.info("Starting SQL to CSV process")
+    try:
+        if not os.path.exists(query_file):
+            logging.error(f"Query file '{query_file}' not found")
+            return False
+
+        cfg = load_config(config_file)
+        if not cfg:
+            return False
+
+        with open(query_file, 'r', encoding='utf-8') as f:
+            query = f.read()
+            
+        if '<EM_schema>' in query:
+            query = query.replace('<EM_schema>', cfg['schema'])
+            logging.info(f"Replaced schema placeholder with: {cfg['schema']}")
+        
+        conn = connect_oracle(cfg)
+        if not conn:
+            logging.error("Failed to connect to database")
+            return False
+            
+        try:
+            result = execute_query_and_write_csv(conn, query, output_csv)
+            conn.close()
+            
+            if result:
+                logging.info("SQL to CSV process completed successfully")
+                return True
+            else:
+                logging.error("SQL to CSV process failed")
+                return False
+        except Exception as e:
+            logging.error(f"Error in SQL execution: {str(e)}")
+            conn.close()
+            return False
+    except Exception as e:
+        logging.error(f"Error in SQL to CSV process: {str(e)}")
+        return False
