@@ -40,15 +40,15 @@ from lib.confluence_publisher import publish_to_confluence  # noqa: E402
 # Database / single-country INI (used ONLY for DB connection parameters)
 CONFIG_FILE = 'config/config.ini'
 
-# Authoritative Confluence configuration (page title lives here)
-TITLE_CONFIG_FILE = 'config.json'
+# Authoritative Confluence configuration (page title lives here) - FIXED PATH
+TITLE_CONFIG_FILE = 'config/config.json'
 
 # Base SQL and default output
 QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
 
-# Current execution metadata
-EXECUTION_TIMESTAMP = datetime.strptime('2025-09-07 23:37:42', '%Y-%m-%d %H:%M:%S')
+# Current execution metadata - UPDATED TO CURRENT TIME
+EXECUTION_TIMESTAMP = datetime.strptime('2025-09-07 23:48:22', '%Y-%m-%d %H:%M:%S')
 EXECUTION_USER = 'satish537'
 
 
@@ -79,15 +79,24 @@ def check_password_available():
     """
     if os.environ.get('CONFLUENCE_PASSWORD'):
         return True
-    config_path = os.path.abspath("config.json")
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                cfg = json.load(f)
-            if 'PASSWORD_ENCRYPTED' in cfg and os.path.exists(SecureConfig.KEY_FILE):
-                return True
-        except Exception:
-            pass
+    
+    # Check multiple possible locations for config.json
+    config_paths = [
+        "config/config.json",  # Most likely location based on your structure
+        "config.json",         # Root directory fallback
+        "config/config_test.json"  # Test config alternative
+    ]
+    
+    for config_path in config_paths:
+        abs_path = os.path.abspath(config_path)
+        if os.path.exists(abs_path):
+            try:
+                with open(abs_path, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f)
+                if 'PASSWORD_ENCRYPTED' in cfg and os.path.exists(SecureConfig.KEY_FILE):
+                    return True
+            except Exception:
+                continue
     return False
 
 
@@ -288,6 +297,31 @@ def update_confluence_page_title(config_path, suffix, is_daily=False):
 
 
 # ---------------------------------------------------------------------------
+# Find Config File Helper
+# ---------------------------------------------------------------------------
+
+def find_config_file(preferred_name="config.json"):
+    """
+    Find the config file in multiple possible locations.
+    """
+    possible_paths = [
+        f"config/{preferred_name}",
+        preferred_name,
+        f"config/{preferred_name.replace('.json', '_test.json')}",
+        f"{preferred_name.replace('.json', '_test.json')}"
+    ]
+    
+    for path in possible_paths:
+        abs_path = os.path.abspath(path)
+        if os.path.exists(abs_path):
+            logging.info(f"Found config file: {abs_path}")
+            return abs_path
+    
+    logging.error(f"Could not find config file. Searched: {possible_paths}")
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Temporary Directory Management
 # ---------------------------------------------------------------------------
 
@@ -309,14 +343,19 @@ def create_temp_workspace(countries, original_cwd):
     
     logging.info(f"Created temporary workspace: {temp_base}")
     
-    # Copy main config files
-    main_configs = ['config.json', 'config_test.json']
-    for config in main_configs:
-        src = os.path.join(original_cwd, config)
-        if os.path.exists(src):
-            dst = os.path.join(temp_base, config)
-            shutil.copy2(src, dst)
-            logging.info(f"Copied {config} to temp workspace")
+    # Copy main config files - SEARCH IN MULTIPLE LOCATIONS
+    main_config = find_config_file("config.json")
+    test_config = find_config_file("config_test.json")
+    
+    if main_config:
+        dst = os.path.join(temp_base, "config.json")
+        shutil.copy2(main_config, dst)
+        logging.info(f"Copied main config to temp workspace: {dst}")
+    
+    if test_config:
+        dst = os.path.join(temp_base, "config_test.json")
+        shutil.copy2(test_config, dst)
+        logging.info(f"Copied test config to temp workspace: {dst}")
     
     # Create subdirectories for each country
     updated_countries = []
@@ -341,6 +380,14 @@ def create_temp_workspace(countries, original_cwd):
         if os.path.exists(original_query):
             shutil.copy2(original_query, temp_query)
             logging.info(f"Copied query for {country_name}: {temp_query}")
+        
+        # Apply date range if specified
+        if 'date_range' in country:
+            sd, ed = country['date_range']
+            if update_query_dates_preserve(temp_query, sd, ed):
+                logging.info(f"Applied date range to {country_name} query")
+            else:
+                logging.error(f"Failed to apply date range to {country_name} query")
         
         # Update country configuration with new paths
         updated_country = country.copy()
