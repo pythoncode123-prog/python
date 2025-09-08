@@ -47,7 +47,7 @@ QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
 
 # Current execution metadata - UPDATED TO CURRENT TIME
-EXECUTION_TIMESTAMP = datetime.strptime('2025-09-08 22:32:36', '%Y-%m-%d %H:%M:%S')
+EXECUTION_TIMESTAMP = datetime.strptime('2025-09-08 22:47:57', '%Y-%m-%d %H:%M:%S')
 EXECUTION_USER = 'satish537'
 
 
@@ -276,10 +276,51 @@ def analyze_csv_file(csv_path):
         data_rows = line_count - 1 if line_count > 0 else 0  # Subtract header row
         
         header = lines[0].strip() if lines else "No content"
+        sample_data = lines[1].strip() if len(lines) > 1 else "No data rows"
         
-        return f"Size: {file_size} bytes, Lines: {line_count}, Data rows: {data_rows}, Header: {header}"
+        return f"Size: {file_size} bytes, Lines: {line_count}, Data rows: {data_rows}, Header: {header}, Sample: {sample_data}"
     except Exception as e:
         return f"Error analyzing {csv_path}: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Debug CSV Processor
+# ---------------------------------------------------------------------------
+
+def debug_csv_processor(processor, directory_path):
+    """
+    Debug what the CSV processor is seeing and doing.
+    """
+    logging.info("="*50)
+    logging.info("DEBUG CSV PROCESSOR")
+    logging.info("="*50)
+    
+    # List all files in directory
+    all_files = os.listdir(directory_path)
+    logging.info(f"All files in directory: {all_files}")
+    
+    # Find CSV files
+    csv_files = [f for f in all_files if f.endswith('.csv')]
+    logging.info(f"All CSV files: {csv_files}")
+    
+    # Find data_ CSV files specifically
+    data_csv_files = [f for f in csv_files if f.startswith('data_')]
+    logging.info(f"Data CSV files (should be processed): {data_csv_files}")
+    
+    # Analyze each data CSV file
+    for csv_file in data_csv_files:
+        csv_path = os.path.join(directory_path, csv_file)
+        analysis = analyze_csv_file(csv_path)
+        logging.info(f"Analysis of {csv_file}: {analysis}")
+        
+        # Show actual content
+        try:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            logging.info(f"Raw content of {csv_file} (first 500 chars):")
+            logging.info(content[:500])
+        except Exception as e:
+            logging.error(f"Could not read raw content of {csv_file}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +356,17 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
             logging.info(f"Query: {query_file}")
             logging.info(f"Output: {output_csv}")
             
+            # CRITICAL: Check if query file exists and show content
+            if os.path.exists(query_file):
+                with open(query_file, 'r', encoding='utf-8') as f:
+                    query_content = f.read()
+                logging.info(f"Query file content preview (first 200 chars): {query_content[:200]}...")
+            else:
+                logging.error(f"Query file does not exist: {query_file}")
+                continue
+            
             # Run workflow for this country (stay in root directory)
+            logging.info(f"About to call run_workflow for {country_name}")
             result = run_workflow(
                 config_file,
                 query_file,
@@ -325,6 +376,7 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
                 test_mode=test_mode,
                 publish_test=False  # Don't publish individual countries
             )
+            logging.info(f"run_workflow returned: {result} for {country_name}")
             
             # Analyze the generated CSV file
             csv_analysis = analyze_csv_file(output_csv)
@@ -353,12 +405,22 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
         
         # Analyze all generated CSV files before aggregation
         logging.info("="*50)
-        logging.info("INDIVIDUAL COUNTRY CSV ANALYSIS")
+        logging.info("INDIVIDUAL COUNTRY CSV ANALYSIS (DETAILED)")
         logging.info("="*50)
         for result in successful_countries:
             csv_path = result['csv_file']
             analysis = analyze_csv_file(csv_path)
             logging.info(f"{result['name']}: {analysis}")
+            
+            # Show first few lines of each CSV file
+            try:
+                with open(csv_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()[:5]  # First 5 lines
+                logging.info(f"First few lines of {result['name']} CSV:")
+                for i, line in enumerate(lines):
+                    logging.info(f"  Line {i+1}: {line.strip()}")
+            except Exception as e:
+                logging.error(f"Could not read {csv_path}: {e}")
         
         # Change to output directory for aggregation
         os.chdir(output_dir)
@@ -369,12 +431,20 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
         csv_files = [f for f in os.listdir('.') if f.startswith('data_') and f.endswith('.csv')]
         logging.info(f"CSV files found for processing: {csv_files}")
         
-        # Aggregate all country CSVs
-        logging.info("Aggregating all country data...")
-        processor = CSVProcessor(execution_timestamp, execution_user)
+        # CRITICAL: Show details of each CSV file the processor will see
+        for csv_file in csv_files:
+            analysis = analyze_csv_file(csv_file)
+            logging.info(f"Pre-processing analysis - {csv_file}: {analysis}")
         
-        # Process all country CSV files to create aggregated reports
+        # Create processor and debug what it sees
+        processor = CSVProcessor(execution_timestamp, execution_user)
+        debug_csv_processor(processor, os.getcwd())
+        
+        # Aggregate all country CSVs
+        logging.info("About to call processor.process_all_files()...")
         success = processor.process_all_files()
+        logging.info(f"CSV Processor returned: {success}")
+        
         if not success:
             logging.error("Failed to aggregate country data")
             return False
@@ -392,6 +462,16 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
             if os.path.exists(report_file):
                 analysis = analyze_csv_file(report_file)
                 logging.info(f"{report_file}: {analysis}")
+                
+                # Show first few lines of aggregated reports
+                try:
+                    with open(report_file, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()[:5]  # First 5 lines
+                    logging.info(f"First few lines of {report_file}:")
+                    for i, line in enumerate(lines):
+                        logging.info(f"  Line {i+1}: {line.strip()}")
+                except Exception as e:
+                    logging.error(f"Could not read {report_file}: {e}")
         
         # Copy aggregated reports to main directory for publishing
         aggregated_report = "task_usage_report_by_region.csv"
