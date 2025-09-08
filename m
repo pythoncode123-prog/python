@@ -5,12 +5,11 @@ Main workflow launcher.
 Key features:
 - Single or multi-country execution
 - Date range modes: --monthly (previous month), --daily (YTD)
-- Page title updates now target config.json (single source of truth) (Option 2)
+- Page title updates now target config.json (single source of truth)
 - Query date range updates preserve the original query formatting (no column tampering)
 - Test mode (--test) uses a predefined test CSV (handled inside workflow)
 - --no-publish skips Confluence upload
-- Multi-country support with date-based folder organization
-- Temporary directory management for config files and outputs
+- Multi-country support with simple date-based folder organization
 """
 
 import os
@@ -40,15 +39,15 @@ from lib.confluence_publisher import publish_to_confluence  # noqa: E402
 # Database / single-country INI (used ONLY for DB connection parameters)
 CONFIG_FILE = 'config/config.ini'
 
-# Authoritative Confluence configuration (page title lives here) - FIXED PATH
+# Authoritative Confluence configuration (page title lives here)
 TITLE_CONFIG_FILE = 'config/config.json'
 
 # Base SQL and default output
 QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
 
-# Current execution metadata - UPDATED TO CURRENT TIME
-EXECUTION_TIMESTAMP = datetime.strptime('2025-09-08 00:39:32', '%Y-%m-%d %H:%M:%S')
+# Current execution metadata
+EXECUTION_TIMESTAMP = datetime.strptime('2025-09-08 22:05:00', '%Y-%m-%d %H:%M:%S')
 EXECUTION_USER = 'satish537'
 
 
@@ -248,184 +247,12 @@ def update_confluence_page_title(config_path, suffix, is_daily=False):
             logging.info(f"Successfully updated Confluence PAGE_TITLE in JSON to: {new_title}")
             return True
 
-        # INI fallback (not typically used now)
-        cp = configparser.ConfigParser()
-        cp.optionxform = str
-        with open(abs_config_path, 'r', encoding='utf-8') as f:
-            raw = f.read()
-
-        if '[' not in raw.splitlines()[0]:
-            temp_raw = "[DEFAULT]\n" + raw
-        else:
-            temp_raw = raw
-        cp.read_string(temp_raw)
-
-        target_sections = cp.sections() if cp.sections() else ['DEFAULT']
-        updated = False
-        for sec in target_sections:
-            if 'PAGE_TITLE' in cp[sec]:
-                current = cp[sec]['PAGE_TITLE'].strip().strip('"\'')
-                base = re.sub(r'_daily$', '', current)
-                base = re.sub(
-                    r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December|YTD)$',
-                    '', base
-                )
-                new_title = f"{base}_daily" if is_daily else f"{base} - {suffix}"
-                cp[sec]['PAGE_TITLE'] = new_title
-                updated = True
-                break
-
-        if updated:
-            with open(abs_config_path, 'w', encoding='utf-8') as f:
-                if target_sections == ['DEFAULT']:
-                    for k, v in cp['DEFAULT'].items():
-                        if k == 'PAGE_TITLE':
-                            f.write(f'PAGE_TITLE = "{v}"\n')
-                        else:
-                            f.write(f'{k} = {v}\n')
-                else:
-                    cp.write(f)
-            logging.info(f"Successfully updated Confluence PAGE_TITLE in INI to: {new_title}")
-            return True
-
-        logging.error(f"Could not find PAGE_TITLE in {abs_config_path}")
+        logging.error(f"Config file is not JSON format: {abs_config_path}")
         return False
 
     except Exception as e:
         logging.error(f"Error updating Confluence page title: {str(e)}")
         return False
-
-
-# ---------------------------------------------------------------------------
-# Find Config File Helper
-# ---------------------------------------------------------------------------
-
-def find_config_file(preferred_name="config.json"):
-    """
-    Find the config file in multiple possible locations.
-    """
-    possible_paths = [
-        f"config/{preferred_name}",
-        preferred_name,
-        f"config/{preferred_name.replace('.json', '_test.json')}",
-        f"{preferred_name.replace('.json', '_test.json')}"
-    ]
-    
-    for path in possible_paths:
-        abs_path = os.path.abspath(path)
-        if os.path.exists(abs_path):
-            logging.info(f"Found config file: {abs_path}")
-            return abs_path
-    
-    logging.error(f"Could not find config file. Searched: {possible_paths}")
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Temporary Directory Management
-# ---------------------------------------------------------------------------
-
-def create_temp_workspace(countries, original_cwd):
-    """
-    Create a temporary workspace with all necessary config files and directories.
-    
-    Args:
-        countries: List of country configurations
-        original_cwd: Original working directory
-        
-    Returns:
-        (temp_dir_path, updated_countries_list)
-    """
-    # Create date-based temporary directory
-    date_str = EXECUTION_TIMESTAMP.strftime('%Y-%m-%d_%H%M%S')
-    temp_base = os.path.join(original_cwd, 'temp_workspace', date_str)
-    os.makedirs(temp_base, exist_ok=True)
-    
-    logging.info(f"Created temporary workspace: {temp_base}")
-    
-    # Copy main config files - SEARCH IN MULTIPLE LOCATIONS
-    main_config = find_config_file("config.json")
-    test_config = find_config_file("config_test.json")
-    
-    if main_config:
-        dst = os.path.join(temp_base, "config.json")
-        shutil.copy2(main_config, dst)
-        logging.info(f"Copied main config to temp workspace: {dst}")
-    
-    if test_config:
-        dst = os.path.join(temp_base, "config_test.json")
-        shutil.copy2(test_config, dst)
-        logging.info(f"Copied test config to temp workspace: {dst}")
-    
-    # Create subdirectories for each country
-    updated_countries = []
-    for country in countries:
-        country_name = country['name'].lower()
-        country_dir = os.path.join(temp_base, f"country_{country_name}")
-        os.makedirs(country_dir, exist_ok=True)
-        
-        # Copy country-specific config files
-        original_config = os.path.join(original_cwd, country['config_file'])
-        original_query = country['query_file']
-        
-        # Create new paths in temp directory
-        temp_config = os.path.join(country_dir, f"config_{country_name}.ini")
-        temp_query = os.path.join(country_dir, f"query_{country_name}.sql")
-        
-        # Copy files
-        if os.path.exists(original_config):
-            shutil.copy2(original_config, temp_config)
-            logging.info(f"Copied config for {country_name}: {temp_config}")
-        
-        if os.path.exists(original_query):
-            shutil.copy2(original_query, temp_query)
-            logging.info(f"Copied query for {country_name}: {temp_query}")
-        
-        # CRITICAL FIX: Copy config.json to each country directory so it can be found
-        if main_config:
-            country_config_json = os.path.join(country_dir, "config.json")
-            shutil.copy2(main_config, country_config_json)
-            logging.info(f"Copied main config.json to country dir: {country_config_json}")
-        
-        if test_config:
-            country_test_config = os.path.join(country_dir, "config_test.json")
-            shutil.copy2(test_config, country_test_config)
-            logging.info(f"Copied test config to country dir: {country_test_config}")
-        
-        # Apply date range if specified
-        if 'date_range' in country:
-            sd, ed = country['date_range']
-            if update_query_dates_preserve(temp_query, sd, ed):
-                logging.info(f"Applied date range to {country_name} query")
-            else:
-                logging.error(f"Failed to apply date range to {country_name} query")
-        
-        # Update country configuration with new paths
-        updated_country = country.copy()
-        updated_country['config_file'] = temp_config
-        updated_country['query_file'] = temp_query
-        updated_country['country_dir'] = country_dir
-        updated_country['output_csv'] = os.path.join(country_dir, f"data_{country_name}.csv")
-        updated_country['temp_workspace'] = temp_base  # Store temp workspace path
-        
-        updated_countries.append(updated_country)
-    
-    # Create reports directory in temp workspace
-    reports_dir = os.path.join(temp_base, 'reports')
-    os.makedirs(reports_dir, exist_ok=True)
-    
-    # ALSO copy config files to reports directory for final publishing
-    if main_config:
-        reports_config = os.path.join(reports_dir, "config.json")
-        shutil.copy2(main_config, reports_config)
-        logging.info(f"Copied main config to reports dir: {reports_config}")
-    
-    if test_config:
-        reports_test_config = os.path.join(reports_dir, "config_test.json")
-        shutil.copy2(test_config, reports_test_config)
-        logging.info(f"Copied test config to reports dir: {reports_test_config}")
-    
-    return temp_base, updated_countries
 
 
 # ---------------------------------------------------------------------------
@@ -435,46 +262,37 @@ def create_temp_workspace(countries, original_cwd):
 def run_workflow_multi(countries, default_output_csv, execution_timestamp, execution_user, test_mode=False, publish_test=True):
     """
     Run workflow for multiple countries and aggregate results.
-    
-    Args:
-        countries: List of country configs with name, config_file, query_file
-        default_output_csv: Base output CSV name
-        execution_timestamp: Timestamp for execution
-        execution_user: Username of executing user
-        test_mode: Whether to run in test mode
-        publish_test: Whether to publish to Confluence in test mode
+    Simple approach - create date folder and process countries there.
     """
+    # Create date-based folder for organization
+    today_folder = datetime.now().strftime('%Y-%m-%d')
+    output_dir = os.path.join('reports', today_folder)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    logging.info(f"Created output directory: {output_dir}")
+    
     # Store original working directory
     original_cwd = os.getcwd()
     
     try:
-        # Create temporary workspace with all config files
-        temp_workspace, updated_countries = create_temp_workspace(countries, original_cwd)
-        
-        # Track generated CSV files and their country info
-        country_results = []
-        
         # Process each country
-        for country in updated_countries:
+        country_results = []
+        for country in countries:
             country_name = country['name']
             config_file = country['config_file']
-            query_file = country['query_file']
-            output_csv = country['output_csv']
-            country_dir = country['country_dir']
+            query_file = country['query_file']  # This might be a temp file with updated dates
+            output_csv = os.path.join(output_dir, f"data_{country_name.lower()}.csv")
             
             logging.info(f"Processing country: {country_name}")
-            logging.info(f"Country directory: {country_dir}")
-            logging.info(f"Config file: {config_file}")
+            logging.info(f"Config: {config_file}")
+            logging.info(f"Query: {query_file}")
+            logging.info(f"Output: {output_csv}")
             
-            # Change to country directory for processing
-            os.chdir(country_dir)
-            logging.info(f"Changed to directory: {os.getcwd()}")
-            
-            # Run workflow for this country
+            # Run workflow for this country (stay in root directory)
             result = run_workflow(
                 config_file,
                 query_file,
-                os.path.basename(output_csv),  # Use basename since we're in country dir
+                output_csv,
                 execution_timestamp,
                 execution_user,
                 test_mode=test_mode,
@@ -496,27 +314,15 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
                 })
                 logging.error(f"Failed to process {country_name}")
         
-        # Change back to temp workspace root for aggregation
-        os.chdir(temp_workspace)
-        logging.info(f"Changed back to temp workspace: {os.getcwd()}")
-        
         # Check if any countries were processed successfully
         successful_countries = [r for r in country_results if r['success']]
         if not successful_countries:
             logging.error("No countries processed successfully")
             return False
         
-        # Copy all successful CSV files to reports directory for aggregation
-        reports_dir = os.path.join(temp_workspace, 'reports')
-        for result in successful_countries:
-            if os.path.exists(result['csv_file']):
-                dst = os.path.join(reports_dir, f"data_{result['name'].lower()}.csv")
-                shutil.copy2(result['csv_file'], dst)
-                logging.info(f"Copied {result['name']} data to reports: {dst}")
-        
-        # Change to reports directory for aggregation
-        os.chdir(reports_dir)
-        logging.info(f"Changed to reports directory: {os.getcwd()}")
+        # Change to output directory for aggregation
+        os.chdir(output_dir)
+        logging.info(f"Changed to output directory: {os.getcwd()}")
         
         # Aggregate all country CSVs
         logging.info("Aggregating all country data...")
@@ -543,11 +349,12 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
             shutil.copy2(detailed_report, main_detailed_path)
             logging.info(f"Copied detailed report to {main_detailed_path}")
         
-        # Publish aggregated report if not skipping (stay in reports directory)
+        # Change back to original directory for publishing
+        os.chdir(original_cwd)
+        
+        # Publish aggregated report if not skipping
         if publish_test:
             logging.info("Publishing aggregated report to Confluence...")
-            logging.info(f"Current directory for publishing: {os.getcwd()}")
-            logging.info(f"Looking for config files in: {os.listdir('.')}")
             
             publish_success = publish_to_confluence(
                 report_file=aggregated_report,
@@ -558,14 +365,11 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
                 logging.error("Failed to publish to Confluence")
                 return False
         
-        # Change back to original directory
-        os.chdir(original_cwd)
-        
         # Log summary of results
         logging.info("="*60)
         logging.info("MULTI-COUNTRY WORKFLOW SUMMARY")
         logging.info("="*60)
-        logging.info(f"Workspace Location: {temp_workspace}")
+        logging.info(f"Output Directory: {output_dir}")
         logging.info(f"Total Countries: {len(country_results)}")
         logging.info(f"Successful: {len(successful_countries)}")
         logging.info(f"Failed: {len(country_results) - len(successful_countries)}")
@@ -665,20 +469,25 @@ def main():
                 logging.error(f"Query file for {name} not found: {qry_path}")
                 return 1
 
-            prepared.append({"name": name, "config_file": cfg_path, "query_file": qry_path})
+            # Handle date range updates if specified
+            if date_range:
+                sd, ed, _ = date_range
+                tmp_qry = os.path.join(tempfile.gettempdir(), f"query_{name}.sql")
+                # Copy original base query EXACTLY
+                with open(qry_path, 'r', encoding='utf-8') as src, open(tmp_qry, 'w', encoding='utf-8') as dst:
+                    dst.write(src.read())
+                if not update_query_dates_preserve(tmp_qry, sd, ed):
+                    logging.error(f"Failed to update date range for {name}")
+                    return 1
+                prepared.append({"name": name, "config_file": cfg_path, "query_file": tmp_qry})
+            else:
+                prepared.append({"name": name, "config_file": cfg_path, "query_file": qry_path})
 
         # Update title ONCE (global JSON) not per country
         if args.monthly and month_name:
             update_confluence_page_title(TITLE_CONFIG_FILE, month_name, is_daily=False)
         elif args.daily:
             update_confluence_page_title(TITLE_CONFIG_FILE, "", is_daily=True)
-
-        # Apply date range updates to prepared countries in temp workspace
-        if date_range:
-            sd, ed, _ = date_range
-            for country in prepared:
-                # The temp workspace will handle copying and updating query files
-                country['date_range'] = (sd, ed)
 
         result = run_workflow_multi(
             countries=prepared,
