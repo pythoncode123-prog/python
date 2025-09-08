@@ -48,7 +48,7 @@ QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
 
 # Current execution metadata - UPDATED TO CURRENT TIME
-EXECUTION_TIMESTAMP = datetime.strptime('2025-09-08 00:19:58', '%Y-%m-%d %H:%M:%S')
+EXECUTION_TIMESTAMP = datetime.strptime('2025-09-08 00:39:32', '%Y-%m-%d %H:%M:%S')
 EXECUTION_USER = 'satish537'
 
 
@@ -381,6 +381,17 @@ def create_temp_workspace(countries, original_cwd):
             shutil.copy2(original_query, temp_query)
             logging.info(f"Copied query for {country_name}: {temp_query}")
         
+        # CRITICAL FIX: Copy config.json to each country directory so it can be found
+        if main_config:
+            country_config_json = os.path.join(country_dir, "config.json")
+            shutil.copy2(main_config, country_config_json)
+            logging.info(f"Copied main config.json to country dir: {country_config_json}")
+        
+        if test_config:
+            country_test_config = os.path.join(country_dir, "config_test.json")
+            shutil.copy2(test_config, country_test_config)
+            logging.info(f"Copied test config to country dir: {country_test_config}")
+        
         # Apply date range if specified
         if 'date_range' in country:
             sd, ed = country['date_range']
@@ -395,12 +406,24 @@ def create_temp_workspace(countries, original_cwd):
         updated_country['query_file'] = temp_query
         updated_country['country_dir'] = country_dir
         updated_country['output_csv'] = os.path.join(country_dir, f"data_{country_name}.csv")
+        updated_country['temp_workspace'] = temp_base  # Store temp workspace path
         
         updated_countries.append(updated_country)
     
     # Create reports directory in temp workspace
     reports_dir = os.path.join(temp_base, 'reports')
     os.makedirs(reports_dir, exist_ok=True)
+    
+    # ALSO copy config files to reports directory for final publishing
+    if main_config:
+        reports_config = os.path.join(reports_dir, "config.json")
+        shutil.copy2(main_config, reports_config)
+        logging.info(f"Copied main config to reports dir: {reports_config}")
+    
+    if test_config:
+        reports_test_config = os.path.join(reports_dir, "config_test.json")
+        shutil.copy2(test_config, reports_test_config)
+        logging.info(f"Copied test config to reports dir: {reports_test_config}")
     
     return temp_base, updated_countries
 
@@ -440,9 +463,12 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
             country_dir = country['country_dir']
             
             logging.info(f"Processing country: {country_name}")
+            logging.info(f"Country directory: {country_dir}")
+            logging.info(f"Config file: {config_file}")
             
             # Change to country directory for processing
             os.chdir(country_dir)
+            logging.info(f"Changed to directory: {os.getcwd()}")
             
             # Run workflow for this country
             result = run_workflow(
@@ -472,6 +498,7 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
         
         # Change back to temp workspace root for aggregation
         os.chdir(temp_workspace)
+        logging.info(f"Changed back to temp workspace: {os.getcwd()}")
         
         # Check if any countries were processed successfully
         successful_countries = [r for r in country_results if r['success']]
@@ -489,6 +516,7 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
         
         # Change to reports directory for aggregation
         os.chdir(reports_dir)
+        logging.info(f"Changed to reports directory: {os.getcwd()}")
         
         # Aggregate all country CSVs
         logging.info("Aggregating all country data...")
@@ -515,12 +543,11 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
             shutil.copy2(detailed_report, main_detailed_path)
             logging.info(f"Copied detailed report to {main_detailed_path}")
         
-        # Change back to original directory for publishing
-        os.chdir(original_cwd)
-        
-        # Publish aggregated report if not skipping
+        # Publish aggregated report if not skipping (stay in reports directory)
         if publish_test:
             logging.info("Publishing aggregated report to Confluence...")
+            logging.info(f"Current directory for publishing: {os.getcwd()}")
+            logging.info(f"Looking for config files in: {os.listdir('.')}")
             
             publish_success = publish_to_confluence(
                 report_file=aggregated_report,
@@ -530,6 +557,9 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
             if not publish_success:
                 logging.error("Failed to publish to Confluence")
                 return False
+        
+        # Change back to original directory
+        os.chdir(original_cwd)
         
         # Log summary of results
         logging.info("="*60)
