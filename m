@@ -46,8 +46,8 @@ TITLE_CONFIG_FILE = 'config/config.json'
 QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
 
-# Current execution metadata
-EXECUTION_TIMESTAMP = datetime.strptime('2025-09-08 22:05:00', '%Y-%m-%d %H:%M:%S')
+# Current execution metadata - UPDATED TO CURRENT TIME
+EXECUTION_TIMESTAMP = datetime.strptime('2025-09-08 22:32:36', '%Y-%m-%d %H:%M:%S')
 EXECUTION_USER = 'satish537'
 
 
@@ -256,6 +256,33 @@ def update_confluence_page_title(config_path, suffix, is_daily=False):
 
 
 # ---------------------------------------------------------------------------
+# CSV File Analysis Helper
+# ---------------------------------------------------------------------------
+
+def analyze_csv_file(csv_path):
+    """
+    Analyze a CSV file and return information about its content.
+    """
+    try:
+        if not os.path.exists(csv_path):
+            return f"File does not exist: {csv_path}"
+        
+        file_size = os.path.getsize(csv_path)
+        
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        line_count = len(lines)
+        data_rows = line_count - 1 if line_count > 0 else 0  # Subtract header row
+        
+        header = lines[0].strip() if lines else "No content"
+        
+        return f"Size: {file_size} bytes, Lines: {line_count}, Data rows: {data_rows}, Header: {header}"
+    except Exception as e:
+        return f"Error analyzing {csv_path}: {e}"
+
+
+# ---------------------------------------------------------------------------
 # Multi-Country Workflow Function
 # ---------------------------------------------------------------------------
 
@@ -299,6 +326,10 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
                 publish_test=False  # Don't publish individual countries
             )
             
+            # Analyze the generated CSV file
+            csv_analysis = analyze_csv_file(output_csv)
+            logging.info(f"CSV Analysis for {country_name}: {csv_analysis}")
+            
             if result == 0:
                 country_results.append({
                     'name': country_name,
@@ -320,9 +351,23 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
             logging.error("No countries processed successfully")
             return False
         
+        # Analyze all generated CSV files before aggregation
+        logging.info("="*50)
+        logging.info("INDIVIDUAL COUNTRY CSV ANALYSIS")
+        logging.info("="*50)
+        for result in successful_countries:
+            csv_path = result['csv_file']
+            analysis = analyze_csv_file(csv_path)
+            logging.info(f"{result['name']}: {analysis}")
+        
         # Change to output directory for aggregation
         os.chdir(output_dir)
         logging.info(f"Changed to output directory: {os.getcwd()}")
+        logging.info(f"Files in output directory: {os.listdir('.')}")
+        
+        # List all CSV files that will be processed
+        csv_files = [f for f in os.listdir('.') if f.startswith('data_') and f.endswith('.csv')]
+        logging.info(f"CSV files found for processing: {csv_files}")
         
         # Aggregate all country CSVs
         logging.info("Aggregating all country data...")
@@ -333,6 +378,20 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
         if not success:
             logging.error("Failed to aggregate country data")
             return False
+        
+        # Analyze the generated aggregated reports
+        aggregated_files = [
+            "task_usage_report_by_region.csv",
+            "task_usage_report.csv"
+        ]
+        
+        logging.info("="*50)
+        logging.info("AGGREGATED REPORTS ANALYSIS")
+        logging.info("="*50)
+        for report_file in aggregated_files:
+            if os.path.exists(report_file):
+                analysis = analyze_csv_file(report_file)
+                logging.info(f"{report_file}: {analysis}")
         
         # Copy aggregated reports to main directory for publishing
         aggregated_report = "task_usage_report_by_region.csv"
