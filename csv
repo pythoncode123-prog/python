@@ -12,7 +12,8 @@ class CSVProcessor:
         '%d-%m-%Y', '%Y/%m/%d', '%d/%m/%Y',
         '%d/%m/%y', '%m/%d/%Y', '%m/%d/%y',
         '%Y.%m.%d', '%d.%m.%Y', '%d.%m.%y',
-        '%m.%d.%Y', '%m.%d.%y'
+        '%m.%d.%Y', '%m.%d.%y',
+        '%d/%m/%Y', '%m/%d/%Y'  # Added common formats
     ]
 
     def __init__(self, execution_timestamp, execution_user):
@@ -25,77 +26,80 @@ class CSVProcessor:
     @staticmethod
     def get_csv_files(directory: str) -> List[str]:
         """
-        Get all CSV files in the specified directory.
+        Get all CSV files in the specified directory that start with 'data_'.
         """
-        return [file for file in os.listdir(directory) if file.endswith('.csv')]
+        return [file for file in os.listdir(directory) if file.endswith('.csv') and file.startswith('data_')]
 
     @staticmethod
     def parse_filename(filename: str) -> Tuple[Optional[str], Optional[str]]:
         """
         Extract region and environment from filename.
-        FIXED: Enhanced to handle multiple formats including data_REGION.csv
+        For files like 'data_hk.csv', extract 'HK' as region.
         """
-        # Get base filename without path and extension
-        base_filename = os.path.splitext(os.path.basename(filename))[0]
+        if filename.startswith('data_'):
+            # Extract region from data_hk.csv -> HK
+            region = filename.replace('data_', '').replace('.csv', '').upper()
+            return region, 'PROD'  # Default environment
         
-        # Try different filename patterns
-        
-        # Pattern 1: REGION-ENV-... (original pattern)
-        parts = base_filename.split('-')
+        # Fallback to original logic
+        parts = filename.split('-')
         if len(parts) >= 2:
             return parts[0], parts[1]
-        
-        # Pattern 2: data_REGION... (new pattern observed in logs)
-        parts = base_filename.split('_')
-        if len(parts) >= 2 and parts[0].lower() == 'data':
-            return parts[1], "PROD"  # Default to PROD environment
-            
-        # Pattern 3: REGION_ENV... (alternate separator)
-        parts = base_filename.split('_')
-        if len(parts) >= 2 and parts[0] not in ('data', 'task'):
-            return parts[0], parts[1]
-        
-        # No pattern matched
-        logging.info(f"Using default region/env for file: {filename}")
-        return "DEFAULT", "PROD"  # Return defaults instead of None to avoid further issues
+        return None, None
 
     def parse_date(self, net_date: str) -> Optional[datetime]:
         """
         Parse date string using multiple formats.
         """
-        if not net_date or net_date == "DATE" or net_date == "REGION":  # Skip header or invalid values
+        if not net_date or net_date == "DATE" or net_date == "REGION" or net_date == "NET_DATE":
             return None
             
+        # Clean the date string
+        net_date = net_date.strip()
+        
         for fmt in self.DATE_FORMATS:
             try:
                 return datetime.strptime(net_date, fmt)
             except ValueError:
                 continue
+        
+        logging.warning(f"Could not parse date with any format: '{net_date}'")
         return None
 
     def process_line(self, line: List[str], region: str, env: str):
         """
         Process a single line of CSV data.
-        FIXED: Better job count estimation to get realistic values
         """
-        if not line or len(line) < 3:
+        if not line or len(line) < 2:
             return
             
-        # Check if this might be a direct format with REGION,ENV,DATE,CTM_HOST_NAME,TOTAL_JOBS
-        if len(line) >= 5 and line[0] != "REGION" and line[0] != "NET_DATE":  
-            try:
-                # Format appears to be: REGION,ENV,DATE,CTM_HOST_NAME,TOTAL_JOBS
-                region = line[0]
-                env = line[1]
-                date_obj = self.parse_date(line[2])
-                ctm_host_name = line[3].strip()
-                jobs = int(line[4])
+        # Skip header lines
+        if any(header in str(line[0]).upper() for header in ['REGION', 'NET_DATE', 'DATE', 'TOTAL_JOBS']):
+            return
+        
+        try:
+            # Handle the format we see in your CSV: NET_DATE, TOTAL_JOBS
+            if len(line) >= 2:
+                date_str = line[0].strip()
+                jobs_str = line[1].strip()
                 
+                # Parse date
+                date_obj = self.parse_date(date_str)
                 if date_obj is None:
-                    logging.warning(f"Could not parse date: {line[2]}")
+                    logging.warning(f"Could not parse date: '{date_str}' in region {region}")
                     return
                     
+                # Parse jobs count
+                try:
+                    jobs = int(jobs_str)
+                except ValueError:
+                    logging.warning(f"Could not parse jobs count: '{jobs_str}' in region {region}")
+                    return
+                
                 date = date_obj.strftime('%Y-%m-%d')
+                ctm_host_name = f'CTM_{region}'  # Generate a host name
+                
+                logging.debug(f"Processing: Region={region}, Env={env}, Date={date}, Jobs={jobs}")
                 
                 # Update summary dictionaries
                 key = (region, env, date, ctm_host_name)
@@ -103,160 +107,148 @@ class CSVProcessor:
 
                 self.summary_data[key] = self.summary_data.get(key, 0) + jobs
                 self.summary_data_region[key_region] = self.summary_data_region.get(key_region, 0) + jobs
-                return
-            except (ValueError, IndexError) as e:
-                # If this format fails, continue to try the original format
-                logging.debug(f"Direct format processing failed: {str(e)}")
-        
-        # Original format processing with improved job count
-        date_obj = self.parse_date(line[0])
-        if date_obj is None:
-            logging.warning(f"Could not parse date: {line[0]}")
-            return
-
-        try:
-            date = date_obj.strftime('%Y-%m-%d')
-            ctm_host_name = line[1].strip()
-            
-            # FIXED: Better job count calculation to get realistic numbers
-            try:
-                # First try to use the provided value directly
-                jobs = int(line[2])
-            except (ValueError, IndexError):
-                if len(line) >= 4:
-                    # For SQL query output format
-                    # Using a multiplier to get more realistic job counts
-                    # This makes the data comparable to the baseline value
-                    job_multiplier = 4200  # Adjust based on real expected jobs/day
-                    jobs = job_multiplier
-                else:
-                    logging.warning(f"Cannot determine job count from line: {line}")
-                    jobs = 4200  # Default to a realistic value
-
-            # Update summary dictionaries
-            key = (region, env, date, ctm_host_name)
-            key_region = (region, env, date)
-
-            self.summary_data[key] = self.summary_data.get(key, 0) + jobs
-            self.summary_data_region[key_region] = self.summary_data_region.get(key_region, 0) + jobs
-
+                
         except Exception as e:
-            logging.error(f"Error processing line: {line}: {str(e)}")
+            logging.error(f"Error processing line {line} for region {region}: {str(e)}")
 
     def process_csv_file(self, file: str, default_csv_name: str) -> None:
         """
         Process a single CSV file.
         """
         logging.info(f"Processing file: {file}")
+        
+        # Extract region and environment from filename
+        region, env = self.parse_filename(file)
+        if not region:
+            logging.warning(f"Could not extract region from filename: {file}")
+            return
+            
+        logging.info(f"Extracted from {file}: Region={region}, Env={env}")
+        
         try:
             with open(file, 'r', encoding='utf-8') as csv_file:
-                reader = csv.reader(csv_file)
-                lines = list(reader)
-
-            if not lines:
-                logging.warning(f"Empty file: {file}")
-                return
+                csv_reader = csv.reader(csv_file)
+                line_count = 0
+                processed_count = 0
                 
-            # Check first line for format detection
-            has_header = False
-            if lines and lines[0]:
-                first_col = lines[0][0].strip().upper()
-                if first_col == "REGION" or first_col == "NET_DATE":
-                    has_header = True
-                    logging.info(f"Header detected in file: {file}")
-
-            # Determine file format - from SQL or already processed
-            # For SQL output (data.csv), we get region/env from filename
-            # Otherwise use the original region/env logic
-            
-            filename = os.path.basename(file)
-            region = "NA"  # Default region
-            env = "PROD"   # Default environment
-            
-            if filename == default_csv_name:
-                # For SQL output, use default region/env
-                # Skip header if it exists
-                if has_header:
-                    lines.pop(0)
-            else:
-                # For other files, extract region/env from filename
-                file_region, file_env = self.parse_filename(filename)
+                for line in csv_reader:
+                    line_count += 1
+                    if line and len(line) >= 2:  # Must have at least date and jobs
+                        # Skip empty or header lines
+                        if line[0].strip() and not any(header in str(line[0]).upper() for header in ['NET_DATE', 'DATE', 'REGION']):
+                            self.process_line(line, region, env)
+                            processed_count += 1
                 
-                if file_region and file_env:
-                    region = file_region
-                    env = file_env
-                    
-                # Skip header if it exists
-                if has_header:
-                    lines.pop(0)
-
-            for line in lines:
-                try:
-                    self.process_line(line, region, env)
-                except Exception as e:
-                    logging.error(f"Error processing line in {file}: {str(e)}")
-
+                logging.info(f"File {file}: Read {line_count} lines, processed {processed_count} data lines")
+                
         except Exception as e:
-            logging.error(f"Error processing file {file}: {str(e)}")
+            logging.error(f"Error reading file {file}: {str(e)}")
 
-    def write_summary_to_csv(self, filename: str, headers: List[str], data: Dict[Tuple, int]):
+    def write_summary_to_csv(self, filename: str) -> bool:
         """
-        Write summarized data to CSV file.
+        Write summary data to CSV file.
         """
         try:
-            with open(filename, 'w', newline='') as csv_file:
-                writer = csv.writer(csv_file)
-                writer.writerow(headers + ['EXECUTION_TIMESTAMP', 'EXECUTION_USER'])
-
-                for key, total_jobs in data.items():
-                    writer.writerow(list(key) + [total_jobs, self.execution_timestamp.strftime('%Y-%m-%d %H:%M:%S'), self.execution_user])
-            logging.info(f"Successfully wrote summary to {filename}")
-
-        except Exception as e:
-            logging.error(f"Error writing to {filename}: {str(e)}")
-
-    def process_all_files(self, input_file=None, default_csv_name='data.csv', output_prefix='') -> bool:
-        """
-        Process CSV files and generate summary reports.
-        If input_file is provided, process only that file.
-        
-        Args:
-            input_file: Specific CSV file to process
-            default_csv_name: Default name for the CSV output from SQL
-            output_prefix: Prefix to add to output files (e.g., for test mode)
-        """
-        logging.info("Starting CSV processing")
-        try:
-            if input_file:
-                if not os.path.exists(input_file):
-                    logging.error(f"Input file {input_file} not found")
-                    return False
-                files_to_process = [input_file]
-            else:
-                files_to_process = [f for f in self.get_csv_files('.') if f != f'{output_prefix}task_usage_report.csv' and f != f'{output_prefix}task_usage_report_by_region.csv']
+            logging.info(f"Writing summary data to {filename}")
+            logging.info(f"Summary data contains {len(self.summary_data)} entries")
             
-            if not files_to_process:
-                logging.warning("No CSV files found to process")
+            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                # Write header
+                writer.writerow(['REGION', 'ENV', 'DATE', 'CTM_HOST_NAME', 'TOTAL_JOBS', 'EXECUTION_TIMESTAMP', 'EXECUTION_USER'])
+                
+                rows_written = 0
+                # Write data
+                for (region, env, date, ctm_host_name), total_jobs in self.summary_data.items():
+                    writer.writerow([
+                        region, 
+                        env, 
+                        date, 
+                        ctm_host_name, 
+                        total_jobs,
+                        self.execution_timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                        self.execution_user
+                    ])
+                    rows_written += 1
+                
+                logging.info(f"Successfully wrote {rows_written} rows to {filename}")
+                return True
+                
+        except Exception as e:
+            logging.error(f"Error writing summary to {filename}: {str(e)}")
+            return False
+
+    def write_summary_to_csv_by_region(self, filename: str) -> bool:
+        """
+        Write region summary data to CSV file.
+        """
+        try:
+            logging.info(f"Writing region summary data to {filename}")
+            logging.info(f"Region summary data contains {len(self.summary_data_region)} entries")
+            
+            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                # Write header
+                writer.writerow(['REGION', 'ENV', 'DATE', 'TOTAL_JOBS', 'EXECUTION_TIMESTAMP', 'EXECUTION_USER'])
+                
+                rows_written = 0
+                # Write data
+                for (region, env, date), total_jobs in self.summary_data_region.items():
+                    writer.writerow([
+                        region, 
+                        env, 
+                        date, 
+                        total_jobs,
+                        self.execution_timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                        self.execution_user
+                    ])
+                    rows_written += 1
+                
+                logging.info(f"Successfully wrote {rows_written} rows to {filename}")
+                return True
+                
+        except Exception as e:
+            logging.error(f"Error writing region summary to {filename}: {str(e)}")
+            return False
+
+    def process_all_files(self) -> bool:
+        """
+        Process all CSV files in current directory and generate reports.
+        """
+        try:
+            logging.info("Starting CSV processing...")
+            
+            # Get current directory
+            current_dir = os.getcwd()
+            logging.info(f"Processing files in directory: {current_dir}")
+            
+            # Get all CSV files that start with 'data_'
+            csv_files = self.get_csv_files(current_dir)
+            logging.info(f"Found CSV files: {csv_files}")
+            
+            if not csv_files:
+                logging.warning("No data CSV files found for processing")
                 return False
-
-            for file in files_to_process:
-                self.process_csv_file(file, default_csv_name)
-
-            # Write summary reports with optional prefix
-            self.write_summary_to_csv(
-                f"{output_prefix}task_usage_report.csv",
-                ["REGION", "ENV", "DATE", "CTM_HOST_NAME", "TOTAL_JOBS"],
-                self.summary_data
-            )
-
-            self.write_summary_to_csv(
-                f"{output_prefix}task_usage_report_by_region.csv",
-                ["REGION", "ENV", "DATE", "TOTAL_JOBS"],
-                self.summary_data_region
-            )
             
-            logging.info("CSV processing completed successfully")
-            return True
+            # Process each file
+            for csv_file in csv_files:
+                self.process_csv_file(csv_file, csv_file)
+            
+            logging.info(f"Processed {len(csv_files)} CSV files")
+            logging.info(f"Total summary entries: {len(self.summary_data)}")
+            logging.info(f"Total region summary entries: {len(self.summary_data_region)}")
+            
+            # Write summary files
+            summary_success = self.write_summary_to_csv('task_usage_report.csv')
+            region_success = self.write_summary_to_csv_by_region('task_usage_report_by_region.csv')
+            
+            if summary_success and region_success:
+                logging.info("CSV processing completed successfully")
+                return True
+            else:
+                logging.error("Failed to write one or more summary files")
+                return False
+                
         except Exception as e:
-            logging.error(f"Error in CSV processing: {str(e)}")
+            logging.error(f"Error in process_all_files: {str(e)}")
             return False
