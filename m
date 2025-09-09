@@ -47,7 +47,7 @@ QUERY_FILE = 'config/query.sql'
 OUTPUT_CSV = 'data.csv'
 
 # Current execution metadata - UPDATED TO CURRENT TIME
-EXECUTION_TIMESTAMP = datetime.strptime('2025-09-09 08:06:24', '%Y-%m-%d %H:%M:%S')
+EXECUTION_TIMESTAMP = datetime.strptime('2025-09-09 08:17:18', '%Y-%m-%d %H:%M:%S')
 EXECUTION_USER = 'satish537'
 
 
@@ -385,7 +385,7 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
         # Use the FIXED CSV processor
         logging.info("Using FIXED CSV processor...")
         processor = CSVProcessor(execution_timestamp, execution_user)
-        success = processor.process_all_files()
+        success = processor.process_all_files()  # No parameters needed
         logging.info(f"Fixed CSV processor returned: {success}")
         
         if not success:
