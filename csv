@@ -111,7 +111,7 @@ class CSVProcessor:
         except Exception as e:
             logging.error(f"Error processing line {line} for region {region}: {str(e)}")
 
-    def process_csv_file(self, file: str, default_csv_name: str) -> None:
+    def process_csv_file(self, file: str, default_csv_name: str = None) -> None:
         """
         Process a single CSV file.
         """
@@ -211,9 +211,12 @@ class CSVProcessor:
             logging.error(f"Error writing region summary to {filename}: {str(e)}")
             return False
 
-    def process_all_files(self) -> bool:
+    def process_all_files(self, output_path: str = None) -> bool:
         """
         Process all CSV files in current directory and generate reports.
+        
+        Args:
+            output_path: Optional output path (for backward compatibility)
         """
         try:
             logging.info("Starting CSV processing...")
@@ -232,7 +235,7 @@ class CSVProcessor:
             
             # Process each file
             for csv_file in csv_files:
-                self.process_csv_file(csv_file, csv_file)
+                self.process_csv_file(csv_file)
             
             logging.info(f"Processed {len(csv_files)} CSV files")
             logging.info(f"Total summary entries: {len(self.summary_data)}")
