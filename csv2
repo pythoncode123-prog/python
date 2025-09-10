@@ -1,0 +1,225 @@
+import os
+import csv
+from datetime import datetime
+import logging
+from typing import Dict, List, Tuple, Optional
+
+class CSVProcessor:
+    """Class to handle CSV file processing and data aggregation."""
+
+    DATE_FORMATS = [
+        '%Y-%m-%d %H:%M:%S', '%Y-%m-%d',
+        '%d-%m-%Y', '%Y/%m/%d', '%d/%m/%Y',
+        '%d/%m/%y', '%m/%d/%Y', '%m/%d/%y',
+        '%Y.%m.%d', '%d.%m.%Y', '%d.%m.%y',
+        '%m.%d.%Y', '%m.%d.%y'
+    ]
+
+    def __init__(self, execution_timestamp, execution_user):
+        """Initialize the CSVProcessor."""
+        self.execution_timestamp = execution_timestamp
+        self.execution_user = execution_user
+        self.summary_data: Dict[Tuple, int] = {}
+        self.summary_data_region: Dict[Tuple, int] = {}
+
+    @staticmethod
+    def get_csv_files(directory: str) -> List[str]:
+        """Get all CSV files in the specified directory."""
+        return [file for file in os.listdir(directory) if file.endswith('.csv')]
+
+    @staticmethod
+    def parse_filename(filename: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Extract region and environment from filename.
+        Enhanced to handle multiple formats including data_REGION.csv
+        """
+        base_filename = os.path.splitext(os.path.basename(filename))[0]
+        
+        # Pattern 1: data_REGION (new pattern for multi-country)
+        if base_filename.startswith('data_'):
+            parts = base_filename.split('_')
+            if len(parts) >= 2:
+                region = parts[1].upper()  # UK, HK, etc.
+                return region, "PROD"  # Default to PROD environment
+        
+        # Pattern 2: REGION-ENV-... (original pattern)
+        parts = base_filename.split('-')
+        if len(parts) >= 2:
+            return parts[0], parts[1]
+        
+        # Pattern 3: REGION_ENV... (alternate separator)
+        parts = base_filename.split('_')
+        if len(parts) >= 2 and parts[0] not in ('data', 'task'):
+            return parts[0], parts[1]
+        
+        # Default fallback
+        logging.info(f"Using default region/env for file: {filename}")
+        return "DEFAULT", "PROD"
+
+    def parse_date(self, net_date: str) -> Optional[datetime]:
+        """Parse date string using multiple formats."""
+        if not net_date or net_date == "DATE" or net_date == "NET_DATE":
+            return None
+            
+        for fmt in self.DATE_FORMATS:
+            try:
+                return datetime.strptime(net_date, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def process_line(self, line: List[str], region: str, env: str):
+        """
+        Process a single line of CSV data.
+        Handles the output from your SQL query: NET_DATE, TOTAL_JOBS
+        """
+        if not line or len(line) < 2:
+            return
+            
+        # Skip header row
+        if line[0] in ("NET_DATE", "DATE", "REGION"):
+            return
+        
+        # Parse the date
+        date_obj = self.parse_date(line[0])
+        if date_obj is None:
+            logging.warning(f"Could not parse date: {line[0]}")
+            return
+
+        try:
+            date = date_obj.strftime('%Y-%m-%d')
+            
+            # Get total jobs from second column
+            jobs = int(line[1])
+            
+            # For aggregated data, we'll use the region as CTM_HOST_NAME
+            ctm_host_name = f"CTM_{region}"
+            
+            # Update summary dictionaries
+            key = (region, env, date, ctm_host_name)
+            key_region = (region, env, date)
+
+            self.summary_data[key] = self.summary_data.get(key, 0) + jobs
+            self.summary_data_region[key_region] = self.summary_data_region.get(key_region, 0) + jobs
+
+        except Exception as e:
+            logging.error(f"Error processing line: {line}: {str(e)}")
+
+    def process_csv_file(self, file: str) -> None:
+        """Process a single CSV file."""
+        logging.info(f"Processing file: {file}")
+        try:
+            # Extract region from filename
+            region, env = self.parse_filename(file)
+            logging.info(f"Processing as Region: {region}, Environment: {env}")
+            
+            with open(file, 'r', encoding='utf-8') as csv_file:
+                reader = csv.reader(csv_file)
+                lines = list(reader)
+
+            if not lines:
+                logging.warning(f"Empty file: {file}")
+                return
+            
+            # Log first few lines for debugging
+            logging.info(f"First 3 lines of {file}:")
+            for i, line in enumerate(lines[:3]):
+                logging.info(f"  Line {i}: {line}")
+            
+            # Process all lines (skip header if present)
+            for i, line in enumerate(lines):
+                if i == 0 and line[0] in ("NET_DATE", "DATE"):
+                    continue  # Skip header
+                self.process_line(line, region, env)
+            
+            logging.info(f"Processed {len(lines)-1} data rows from {file}")
+
+        except Exception as e:
+            logging.error(f"Error processing file {file}: {str(e)}")
+
+    def write_summary_to_csv(self, filename: str, headers: List[str], data: Dict[Tuple, int]):
+        """Write summarized data to CSV file."""
+        try:
+            with open(filename, 'w', newline='') as csv_file:
+                writer = csv.writer(csv_file)
+                writer.writerow(headers + ['EXECUTION_TIMESTAMP', 'EXECUTION_USER'])
+
+                for key, total_jobs in data.items():
+                    writer.writerow(list(key) + [total_jobs, 
+                                                  self.execution_timestamp.strftime('%Y-%m-%d %H:%M:%S'), 
+                                                  self.execution_user])
+            
+            logging.info(f"Successfully wrote {len(data)} rows to {filename}")
+
+        except Exception as e:
+            logging.error(f"Error writing to {filename}: {str(e)}")
+
+    def process_all_files(self, input_file=None, default_csv_name='data.csv', output_prefix='') -> bool:
+        """
+        Process CSV files and generate summary reports.
+        
+        Args:
+            input_file: Specific CSV file to process (for single country mode)
+            default_csv_name: Default name for the CSV output from SQL
+            output_prefix: Prefix to add to output files (e.g., for test mode)
+        """
+        logging.info("Starting CSV processing")
+        logging.info(f"Current directory: {os.getcwd()}")
+        logging.info(f"Files in current directory: {os.listdir('.')}")
+        
+        try:
+            if input_file:
+                # Single file mode (for backward compatibility)
+                if not os.path.exists(input_file):
+                    logging.error(f"Input file {input_file} not found")
+                    return False
+                files_to_process = [input_file]
+            else:
+                # Multi-file mode - process all data_*.csv files
+                all_files = self.get_csv_files('.')
+                files_to_process = [f for f in all_files if f.startswith('data_') and f.endswith('.csv')]
+                
+                # Exclude the output files
+                files_to_process = [f for f in files_to_process 
+                                  if f not in (f'{output_prefix}task_usage_report.csv', 
+                                             f'{output_prefix}task_usage_report_by_region.csv')]
+            
+            if not files_to_process:
+                logging.warning("No CSV files found to process")
+                return False
+            
+            logging.info(f"Files to process: {files_to_process}")
+
+            # Process each file
+            for file in files_to_process:
+                self.process_csv_file(file)
+
+            # Log summary of collected data
+            logging.info(f"Total detailed records collected: {len(self.summary_data)}")
+            logging.info(f"Total region summary records collected: {len(self.summary_data_region)}")
+            
+            if self.summary_data_region:
+                # Show sample of collected data
+                sample_items = list(self.summary_data_region.items())[:5]
+                for key, jobs in sample_items:
+                    logging.info(f"  Sample: {key} -> {jobs} jobs")
+
+            # Write summary reports with optional prefix
+            self.write_summary_to_csv(
+                f"{output_prefix}task_usage_report.csv",
+                ["REGION", "ENV", "DATE", "CTM_HOST_NAME", "TOTAL_JOBS"],
+                self.summary_data
+            )
+
+            self.write_summary_to_csv(
+                f"{output_prefix}task_usage_report_by_region.csv",
+                ["REGION", "ENV", "DATE", "TOTAL_JOBS"],
+                self.summary_data_region
+            )
+            
+            logging.info("CSV processing completed successfully")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error in CSV processing: {str(e)}")
+            return False
