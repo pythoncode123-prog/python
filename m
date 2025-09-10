@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main workflow launcher.
+Main workflow launcher - FIXED VERSION
 
 Key features:
 - Single or multi-country execution
@@ -284,13 +284,13 @@ def analyze_csv_file(csv_path):
 
 
 # ---------------------------------------------------------------------------
-# Multi-Country Workflow Function
+# Multi-Country Workflow Function - FIXED
 # ---------------------------------------------------------------------------
 
 def run_workflow_multi(countries, default_output_csv, execution_timestamp, execution_user, test_mode=False, publish_test=True):
     """
     Run workflow for multiple countries and aggregate results.
-    Simple approach - create date folder and process countries there.
+    FIXED: Proper CSV processor call without invalid parameters.
     """
     # Create date-based folder for organization
     today_folder = datetime.now().strftime('%Y-%m-%d')
@@ -382,10 +382,14 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
         csv_files = [f for f in os.listdir('.') if f.startswith('data_') and f.endswith('.csv')]
         logging.info(f"CSV files found for processing: {csv_files}")
         
-        # Use the FIXED CSV processor
+        # Use the FIXED CSV processor - NO PARAMETERS
         logging.info("Using FIXED CSV processor...")
         processor = CSVProcessor(execution_timestamp, execution_user)
-        success = processor.process_all_files()  # No parameters needed
+        
+        # FIXED: Call process_all_files() without any parameters
+        # It will automatically find and process all data_*.csv files in the current directory
+        success = processor.process_all_files()
+        
         logging.info(f"Fixed CSV processor returned: {success}")
         
         if not success:
@@ -469,6 +473,8 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
         
     except Exception as e:
         logging.error(f"Error in multi-country workflow: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         return False
     finally:
         # Ensure we're back in the original directory
