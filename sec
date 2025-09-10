@@ -1,0 +1,188 @@
+import os
+import base64
+import logging
+import json
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+class SecureConfig:
+    """Class to handle secure encryption and decryption of sensitive data."""
+    
+    # FIX: Always look for .secure_key in the project root directory
+    # Get the project root (parent of lib directory)
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    KEY_FILE = os.path.join(PROJECT_ROOT, '.secure_key')
+    CONFIG_FILE = os.path.join(PROJECT_ROOT, 'config', 'config.json')
+    
+    @staticmethod
+    def generate_key(passphrase=None):
+        """
+        Generate a secure key for encryption.
+        If passphrase is provided, it will be used to derive the key.
+        Otherwise, a random key will be generated.
+        """
+        try:
+            if passphrase:
+                # Derive key from passphrase
+                salt = os.urandom(16)
+                kdf = PBKDF2HMAC(
+                    algorithm=hashes.SHA256(),
+                    length=32,
+                    salt=salt,
+                    iterations=100000,
+                )
+                key = base64.urlsafe_b64encode(kdf.derive(passphrase.encode()))
+                
+                # Save salt to be able to recreate key
+                salt_file = SecureConfig.KEY_FILE + '.salt'
+                with open(salt_file, 'wb') as f:
+                    f.write(salt)
+            else:
+                # Generate random key
+                key = Fernet.generate_key()
+                
+            # Save key to file with restricted permissions
+            with open(SecureConfig.KEY_FILE, 'wb') as f:
+                f.write(key)
+            
+            # Set restrictive permissions (only on Unix-like systems)
+            try:
+                os.chmod(SecureConfig.KEY_FILE, 0o600)
+            except:
+                pass  # Windows doesn't support chmod the same way
+            
+            return key
+        except Exception as e:
+            logging.error(f"Error generating key: {str(e)}")
+            return None
+    
+    @staticmethod
+    def load_key(passphrase=None):
+        """
+        Load the encryption key from file.
+        If passphrase is provided, it will be used to derive the key.
+        """
+        try:
+            # Debug logging
+            logging.debug(f"Looking for key file at: {SecureConfig.KEY_FILE}")
+            logging.debug(f"Key file exists: {os.path.exists(SecureConfig.KEY_FILE)}")
+            
+            if passphrase:
+                salt_file = SecureConfig.KEY_FILE + '.salt'
+                if os.path.exists(salt_file):
+                    # Recreate key from passphrase
+                    with open(salt_file, 'rb') as f:
+                        salt = f.read()
+                    
+                    kdf = PBKDF2HMAC(
+                        algorithm=hashes.SHA256(),
+                        length=32,
+                        salt=salt,
+                        iterations=100000,
+                    )
+                    key = base64.urlsafe_b64encode(kdf.derive(passphrase.encode()))
+                    return key
+            
+            # Load key from file
+            if not os.path.exists(SecureConfig.KEY_FILE):
+                logging.error(f"Key file not found: {SecureConfig.KEY_FILE}")
+                return None
+                
+            with open(SecureConfig.KEY_FILE, 'rb') as f:
+                key = f.read()
+            
+            return key
+        except Exception as e:
+            logging.error(f"Error loading key: {str(e)}")
+            return None
+    
+    @staticmethod
+    def encrypt_password(password, key=None, passphrase=None):
+        """
+        Encrypt a password and return the encrypted value.
+        """
+        try:
+            # Get key
+            if not key:
+                key = SecureConfig.load_key(passphrase)
+                
+            if not key:
+                key = SecureConfig.generate_key(passphrase)
+                
+            if not key:
+                logging.error("Could not get encryption key")
+                return None
+                
+            # Create cipher
+            cipher = Fernet(key)
+            
+            # Encrypt password
+            encrypted_password = cipher.encrypt(password.encode())
+            
+            # Return base64 encoded encrypted password
+            return base64.b64encode(encrypted_password).decode('utf-8')
+            
+        except Exception as e:
+            logging.error(f"Error encrypting password: {str(e)}")
+            return None
+    
+    @staticmethod
+    def decrypt_password(encrypted_password, key=None, passphrase=None):
+        """
+        Decrypt the password.
+        """
+        try:
+            # Get key
+            if not key:
+                key = SecureConfig.load_key(passphrase)
+                
+            if not key:
+                logging.error("Could not load encryption key")
+                return None
+                
+            # Decode the base64 encrypted password
+            encrypted_bytes = base64.b64decode(encrypted_password.encode('utf-8'))
+            
+            # Create cipher
+            cipher = Fernet(key)
+            
+            # Decrypt password
+            password = cipher.decrypt(encrypted_bytes).decode()
+            
+            return password
+        except Exception as e:
+            logging.error(f"Error decrypting password: {str(e)}")
+            return None
+    
+    @staticmethod
+    def update_config_with_encrypted_password(password, config_file=None):
+        """
+        Encrypt password and update it in the config file.
+        """
+        try:
+            if not config_file:
+                config_file = SecureConfig.CONFIG_FILE
+                
+            # Load config
+            config = {}
+            if os.path.exists(config_file):
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+                    
+            # Encrypt password
+            encrypted_password = SecureConfig.encrypt_password(password)
+            if not encrypted_password:
+                return False
+                
+            # Update config
+            config['PASSWORD_ENCRYPTED'] = encrypted_password
+            
+            # Save config
+            with open(config_file, 'w') as f:
+                json.dump(config, f, indent=4)
+                
+            return True
+        except Exception as e:
+            logging.error(f"Error updating config with encrypted password: {str(e)}")
+            return False
