@@ -45,38 +45,71 @@ def run_workflow(config_file,
     logging.info("SQL to CSV completed successfully.")
 
     # Step 2: CSV Processing
+    # FIXED: The CSV processor expects files to be named data_*.csv
+    # So we need to ensure our file follows that pattern
     processor = CSVProcessor(execution_timestamp, execution_user)
     output_prefix = "test_" if test_mode else ""
     
-    # For single country, process the single file
-    ok = processor.process_all_files(
-        input_file=output_csv,
-        output_prefix=output_prefix
-    )
+    # Rename the file to match expected pattern if needed
+    if not os.path.basename(output_csv).startswith("data_"):
+        # Extract country/region from config or use default
+        country_name = "default"
+        new_filename = f"data_{country_name}.csv"
+        
+        # Get directory of output_csv
+        output_dir = os.path.dirname(output_csv) or "."
+        new_path = os.path.join(output_dir, new_filename)
+        
+        # Rename the file
+        if os.path.exists(output_csv):
+            shutil.move(output_csv, new_path)
+            logging.info(f"Renamed {output_csv} to {new_path} for processing")
+            output_csv = new_path
     
-    if not ok:
-        logging.error("CSV processing failed.")
-        return 2
+    # Save current directory and change to where the CSV is
+    original_dir = os.getcwd()
+    csv_dir = os.path.dirname(output_csv) or "."
+    os.chdir(csv_dir)
     
-    logging.info("CSV Processing completed successfully.")
-
-    # Step 3: Confluence Publishing
-    logging.info("Step 3: Confluence Publishing...")
-    report_file = f"{output_prefix}task_usage_report_by_region.csv"
-    
-    skip_actual_upload = test_mode and not publish_test
-    confluence_result = publish_to_confluence(
-        report_file=report_file,
-        test_mode=test_mode,
-        skip_actual_upload=skip_actual_upload
-    )
-    
-    if not confluence_result:
-        logging.error("Confluence publishing failed.")
-        return 3
-
-    logging.info("Complete workflow executed successfully!")
-    return 0
+    try:
+        # Now process all data_*.csv files in the directory
+        ok = processor.process_all_files(output_prefix=output_prefix)
+        
+        if not ok:
+            logging.error("CSV processing failed.")
+            return 2
+        
+        logging.info("CSV Processing completed successfully.")
+        
+        # Step 3: Confluence Publishing
+        logging.info("Step 3: Confluence Publishing...")
+        report_file = f"{output_prefix}task_usage_report_by_region.csv"
+        
+        # Copy report back to original directory if needed
+        if csv_dir != original_dir:
+            src = os.path.join(csv_dir, report_file)
+            dst = os.path.join(original_dir, report_file)
+            if os.path.exists(src):
+                shutil.copy2(src, dst)
+                report_file = os.path.basename(dst)
+        
+        skip_actual_upload = test_mode and not publish_test
+        confluence_result = publish_to_confluence(
+            report_file=report_file,
+            test_mode=test_mode,
+            skip_actual_upload=skip_actual_upload
+        )
+        
+        if not confluence_result:
+            logging.error("Confluence publishing failed.")
+            return 3
+        
+        logging.info("Complete workflow executed successfully!")
+        return 0
+        
+    finally:
+        # Always return to original directory
+        os.chdir(original_dir)
 
 
 def run_workflow_multi(countries: List[Dict],
@@ -165,11 +198,8 @@ def run_workflow_multi(countries: List[Dict],
         processor = CSVProcessor(execution_timestamp, execution_user)
         output_prefix = "test_" if test_mode else ""
         
-        # Process all country files (don't specify input_file, let it find all data_*.csv files)
-        ok = processor.process_all_files(
-            input_file=None,  # Process all data_*.csv files
-            output_prefix=output_prefix
-        )
+        # Process all country files - just call with output_prefix
+        ok = processor.process_all_files(output_prefix=output_prefix)
         
         if not ok:
             logging.error("CSV aggregation failed")
