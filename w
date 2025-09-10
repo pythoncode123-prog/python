@@ -142,6 +142,9 @@ def run_workflow_multi(countries: List[Dict],
                         f.write("NET_DATE,TOTAL_JOBS\n")
                         f.write("2024-09-01,5000\n")
                         f.write("2024-09-02,5500\n")
+                        f.write("2024-09-03,5200\n")
+                        f.write("2024-09-04,5800\n")
+                        f.write("2024-09-05,6000\n")
                     logging.info(f"Created dummy test data for {name}")
             else:
                 if not sql_to_csv(cfg, qry, country_csv, execution_timestamp):
@@ -187,10 +190,17 @@ def run_workflow_multi(countries: List[Dict],
                 lines = f.readlines()
             logging.info(f"Generated {report_file}: {len(lines)} lines")
             if len(lines) > 1:
-                logging.info(f"Sample data: {lines[1].strip()}")
+                logging.info(f"Sample data from report:")
+                for i, line in enumerate(lines[:3]):
+                    logging.info(f"  Line {i}: {line.strip()}")
         else:
             logging.error(f"Report file {report_file} was not generated")
             return False
+        
+        if os.path.exists(detailed_file):
+            with open(detailed_file, 'r') as f:
+                line_count = len(f.readlines())
+            logging.info(f"Generated {detailed_file}: {line_count} lines")
         
         # Step 4: Publish to Confluence
         if publish_test:
@@ -222,4 +232,5 @@ def run_workflow_multi(countries: List[Dict],
         logging.error(traceback.format_exc())
         return False
     finally:
+        # Ensure we're back in the original directory
         os.chdir(original_cwd)
