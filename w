@@ -2,17 +2,11 @@ import logging
 from datetime import datetime
 import os
 import shutil
-from typing import List, Dict, Tuple
+from typing import List, Dict
 
 from lib.db_utils import sql_to_csv
 from lib.csv_processor import CSVProcessor
 from lib.confluence_publisher import publish_to_confluence
-
-# Try to import multi-country publisher
-try:
-    from lib.confluence_publisher import publish_to_confluence_multi
-except Exception:
-    publish_to_confluence_multi = None
 
 
 def run_workflow(config_file,
@@ -23,13 +17,13 @@ def run_workflow(config_file,
                  test_mode: bool = False,
                  publish_test: bool = True):
     """
-    Single-country workflow (kept for backward compatibility).
+    Single-country workflow.
     Returns exit code: 0 on success, non-zero on error.
     """
     logging.info(f"Starting single-country workflow")
     logging.info(f"Config: {config_file}, Query: {query_file}, Output: {output_csv}")
     
-    # Step 1: SQL to CSV (or test copy)
+    # Step 1: SQL to CSV
     if test_mode:
         test_file = "test_data.csv"
         if not os.path.exists(test_file):
@@ -44,36 +38,27 @@ def run_workflow(config_file,
     
     logging.info("SQL to CSV completed successfully.")
 
-    # Step 2: CSV Processing
-    # FIXED: The CSV processor expects files to be named data_*.csv
-    # So we need to ensure our file follows that pattern
-    processor = CSVProcessor(execution_timestamp, execution_user)
-    output_prefix = "test_" if test_mode else ""
-    
-    # Rename the file to match expected pattern if needed
+    # Step 2: Rename file to match expected pattern
     if not os.path.basename(output_csv).startswith("data_"):
-        # Extract country/region from config or use default
-        country_name = "default"
-        new_filename = f"data_{country_name}.csv"
-        
-        # Get directory of output_csv
+        new_filename = f"data_default.csv"
         output_dir = os.path.dirname(output_csv) or "."
         new_path = os.path.join(output_dir, new_filename)
         
-        # Rename the file
         if os.path.exists(output_csv):
             shutil.move(output_csv, new_path)
-            logging.info(f"Renamed {output_csv} to {new_path} for processing")
+            logging.info(f"Renamed {output_csv} to {new_path}")
             output_csv = new_path
     
-    # Save current directory and change to where the CSV is
+    # Step 3: Process CSV files
     original_dir = os.getcwd()
     csv_dir = os.path.dirname(output_csv) or "."
     os.chdir(csv_dir)
     
     try:
-        # Now process all data_*.csv files in the directory
-        ok = processor.process_all_files(output_prefix=output_prefix)
+        processor = CSVProcessor(execution_timestamp, execution_user)
+        
+        # Call process_all_files with NO parameters
+        ok = processor.process_all_files()
         
         if not ok:
             logging.error("CSV processing failed.")
@@ -81,9 +66,11 @@ def run_workflow(config_file,
         
         logging.info("CSV Processing completed successfully.")
         
-        # Step 3: Confluence Publishing
-        logging.info("Step 3: Confluence Publishing...")
-        report_file = f"{output_prefix}task_usage_report_by_region.csv"
+        # Step 4: Find the generated report file
+        report_file = "task_usage_report_by_region.csv"
+        if not os.path.exists(report_file):
+            logging.error(f"Report file {report_file} not found")
+            return 3
         
         # Copy report back to original directory if needed
         if csv_dir != original_dir:
@@ -93,6 +80,8 @@ def run_workflow(config_file,
                 shutil.copy2(src, dst)
                 report_file = os.path.basename(dst)
         
+        # Step 5: Publish to Confluence
+        logging.info("Step 5: Confluence Publishing...")
         skip_actual_upload = test_mode and not publish_test
         confluence_result = publish_to_confluence(
             report_file=report_file,
@@ -108,7 +97,6 @@ def run_workflow(config_file,
         return 0
         
     finally:
-        # Always return to original directory
         os.chdir(original_dir)
 
 
@@ -119,28 +107,13 @@ def run_workflow_multi(countries: List[Dict],
                        test_mode: bool = False,
                        publish_test: bool = True) -> bool:
     """
-    Multi-country workflow:
-    - For each country: extract data and save as data_COUNTRY.csv
-    - Process all country CSVs together to create aggregated reports
-    - Publish combined Confluence page
-
-    Args:
-        countries: list of dicts with keys {name, config_file, query_file}
-        default_output_csv: base name for output (not used in multi-country)
-        execution_timestamp: timestamp to include in processed outputs
-        execution_user: user to include in processed outputs
-        test_mode: if True, use test CSV instead of running real SQL
-        publish_test: if True in test mode, allow actual upload
-
-    Returns:
-        True on success, False otherwise.
+    Multi-country workflow - simplified version.
     """
     logging.info("="*60)
     logging.info("Starting multi-country workflow")
     logging.info(f"Countries to process: {[c['name'] for c in countries]}")
     logging.info("="*60)
     
-    # Store original working directory
     original_cwd = os.getcwd()
     country_data_files = []
     
@@ -151,7 +124,6 @@ def run_workflow_multi(countries: List[Dict],
             cfg = country["config_file"]
             qry = country["query_file"]
             
-            # Output file for this country's data
             country_csv = f"data_{name.lower()}.csv"
             
             logging.info(f"\n--- Processing Country: {name} ---")
@@ -159,7 +131,6 @@ def run_workflow_multi(countries: List[Dict],
             logging.info(f"Query: {qry}")
             logging.info(f"Output: {country_csv}")
             
-            # Run SQL for this country
             if test_mode:
                 test_file = f"test_data_{name.lower()}.csv"
                 if os.path.exists(test_file):
@@ -177,7 +148,6 @@ def run_workflow_multi(countries: List[Dict],
                     logging.error(f"SQL to CSV failed for {name}")
                     continue
             
-            # Verify the file was created and has content
             if os.path.exists(country_csv):
                 file_size = os.path.getsize(country_csv)
                 with open(country_csv, 'r') as f:
@@ -194,12 +164,13 @@ def run_workflow_multi(countries: List[Dict],
         # Step 2: Process all country CSVs together
         logging.info("\n--- Aggregating Country Data ---")
         logging.info(f"Processing files: {country_data_files}")
+        logging.info(f"Current directory: {os.getcwd()}")
+        logging.info(f"Files in current directory: {os.listdir('.')}")
         
         processor = CSVProcessor(execution_timestamp, execution_user)
-        output_prefix = "test_" if test_mode else ""
         
-        # Process all country files - just call with output_prefix
-        ok = processor.process_all_files(output_prefix=output_prefix)
+        # Call process_all_files with NO parameters
+        ok = processor.process_all_files()
         
         if not ok:
             logging.error("CSV aggregation failed")
@@ -208,15 +179,15 @@ def run_workflow_multi(countries: List[Dict],
         logging.info("CSV aggregation completed successfully")
         
         # Step 3: Verify output files exist
-        report_file = f"{output_prefix}task_usage_report_by_region.csv"
-        detailed_file = f"{output_prefix}task_usage_report.csv"
+        report_file = "task_usage_report_by_region.csv"
+        detailed_file = "task_usage_report.csv"
         
         if os.path.exists(report_file):
             with open(report_file, 'r') as f:
                 lines = f.readlines()
             logging.info(f"Generated {report_file}: {len(lines)} lines")
             if len(lines) > 1:
-                logging.info(f"Sample data: {lines[1].strip() if len(lines) > 1 else 'No data'}")
+                logging.info(f"Sample data: {lines[1].strip()}")
         else:
             logging.error(f"Report file {report_file} was not generated")
             return False
@@ -251,5 +222,4 @@ def run_workflow_multi(countries: List[Dict],
         logging.error(traceback.format_exc())
         return False
     finally:
-        # Ensure we're back in the original directory
         os.chdir(original_cwd)
