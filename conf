@@ -460,32 +460,64 @@ def generate_daily_total_single_series(df: pd.DataFrame,
 def generate_country_summary_chart(df: pd.DataFrame,
                                   title: str = "Total Jobs by Country") -> str:
     """
-    Generate bar chart showing total jobs per country with percentages.
+    Generate bar chart showing total jobs per country with summary table.
     """
-    # Check if we have country data
-    if 'COUNTRY' not in df.columns:
+    # Check if we have country data - try multiple possible column names
+    country_col = None
+    possible_country_cols = ['COUNTRY', 'Country', 'country', 'REGION', 'Region', 'region']
+    
+    for col in possible_country_cols:
+        if col in df.columns:
+            country_col = col
+            break
+    
+    if country_col is None:
         return "<p>No country data available for country summary chart.</p>"
     
     # Group by country and sum total jobs
-    country_totals = df.groupby('COUNTRY', as_index=False)['TOTAL_JOBS'].sum()
+    country_totals = df.groupby(country_col, as_index=False)['TOTAL_JOBS'].sum()
     country_totals = country_totals.sort_values('TOTAL_JOBS', ascending=False)
     
     if country_totals.empty:
         return "<p>No country data available.</p>"
     
-    # Calculate total for percentage calculation
-    total_jobs = country_totals['TOTAL_JOBS'].sum()
+    # Create summary table
+    table_html = f"""
+<h4>Country Summary</h4>
+<table class='wrapped'>
+<tbody>
+<tr>
+    <th>Country/Market</th>
+    <th>Total Jobs</th>
+    <th>Percentage</th>
+</tr>
+"""
     
-    # Create table for the chart
-    header_row = "<tr><th>Country/Market</th><th>Task Count</th></tr>"
+    total_all_jobs = country_totals['TOTAL_JOBS'].sum()
     
-    data_rows = []
     for _, row in country_totals.iterrows():
-        country = row['COUNTRY']
+        country = row[country_col]
         jobs = int(row['TOTAL_JOBS'])
-        data_rows.append(f"<tr><td>{country}</td><td>{jobs}</td></tr>")
+        percentage = (jobs / total_all_jobs * 100) if total_all_jobs > 0 else 0
+        table_html += f"""
+<tr>
+    <td>{country}</td>
+    <td>{jobs:,}</td>
+    <td>{percentage:.1f}%</td>
+</tr>
+"""
     
-    table_html = f"""<table><tbody>{header_row}{''.join(data_rows)}</tbody></table>"""
+    table_html += "</tbody></table>"
+    
+    # Create chart table data
+    chart_header = "<tr><th>Country/Market</th><th>Task Count</th></tr>"
+    chart_rows = []
+    for _, row in country_totals.iterrows():
+        country = row[country_col]
+        jobs = int(row['TOTAL_JOBS'])
+        chart_rows.append(f"<tr><td>{country}</td><td>{jobs}</td></tr>")
+    
+    chart_table_html = f"""<table><tbody>{chart_header}{''.join(chart_rows)}</tbody></table>"""
     
     chart = f"""
 <h3>{title}</h3>
@@ -505,11 +537,12 @@ def generate_country_summary_chart(df: pd.DataFrame,
   <ac:parameter ac:name="dataDisplay">after</ac:parameter>
   <ac:parameter ac:name="labelAngle">45</ac:parameter>
   <ac:rich-text-body>
-    {table_html}
+    {chart_table_html}
   </ac:rich-text-body>
 </ac:structured-macro>
 """
-    return chart
+    
+    return table_html + chart
 
 # =============================================================
 # Confluence REST Helpers
