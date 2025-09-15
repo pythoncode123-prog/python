@@ -368,7 +368,7 @@ def generate_jobs_data_table(df: pd.DataFrame, baseline: int) -> str:
         # Color coding logic - positive (baseline higher) = green, negative (total jobs higher) = red
         if variation > 0:
             var_style = 'style="background-color:#90EE90;"'  # Light green for positive
-            var_text = f"+{variation:,}"
+            var_text = f"{variation:,}"  # FIXED: Removed + sign
         elif variation < 0:
             var_style = 'style="background-color:#FFB6C1;"'  # Light red for negative
             var_text = f"{variation:,}"
@@ -412,15 +412,11 @@ def generate_daily_total_single_series(df: pd.DataFrame,
     
     # Convert to the format needed for the chart
     date_columns = {}
-    percentages = {}
     for _, row in daily.iterrows():
-        # Use shorter date format for better readability
-        date_str = row['DATE'].strftime('%m-%d')  # Changed from full date to MM-DD
+        # Use DD-MM format for better readability and to avoid *** display
+        date_str = row['DATE'].strftime('%d-%m')  # Changed to DD-MM format
         total_jobs = int(row['TOTAL_JOBS'])
         date_columns[date_str] = total_jobs
-        # Calculate percentage relative to baseline
-        percentage = (total_jobs / baseline * 100) if baseline > 0 else 0
-        percentages[date_str] = f"{percentage:.1f}%"
     
     # Create header row
     header_row = "<tr><th>Series</th>"
@@ -454,6 +450,88 @@ def generate_daily_total_single_series(df: pd.DataFrame,
   <ac:parameter ac:name="colors">#829A3D</ac:parameter>
   <ac:parameter ac:name="dataDisplay">after</ac:parameter>
   <ac:parameter ac:name="fontSize">10</ac:parameter>
+  <ac:rich-text-body>
+    {table_html}
+  </ac:rich-text-body>
+</ac:structured-macro>
+"""
+    return chart
+
+def generate_timeline_chart(df: pd.DataFrame,
+                           baseline: int,
+                           title: str = "Task Usage Timeline") -> str:
+    """
+    Generate timeline chart with separate lines per country if COUNTRY column exists.
+    """
+    # Check if we have country data
+    if 'COUNTRY' in df.columns:
+        # Multi-country timeline
+        countries = df['COUNTRY'].unique()
+        
+        # Group by date and country
+        country_data = df.groupby(['DATE', 'COUNTRY'], as_index=False)['TOTAL_JOBS'].sum()
+        
+        # Pivot to get countries as columns
+        pivot_data = country_data.pivot(index='DATE', columns='COUNTRY', values='TOTAL_JOBS').fillna(0)
+        pivot_data = pivot_data.sort_index()
+        
+        # Create table headers
+        header_row = "<tr><th>Date</th>"
+        for country in countries:
+            header_row += f"<th>{country}</th>"
+        header_row += "</tr>"
+        
+        # Create data rows
+        data_rows = []
+        for date, row in pivot_data.iterrows():
+            date_str = date.strftime('%Y-%m-%d')
+            data_row = f"<tr><td>{date_str}</td>"
+            for country in countries:
+                value = int(row[country]) if country in row else 0
+                data_row += f"<td>{value}</td>"
+            data_row += "</tr>"
+            data_rows.append(data_row)
+        
+        table_html = f"""<table><tbody>{header_row}{''.join(data_rows)}</tbody></table>"""
+        
+        # Generate colors for each country
+        colors = ["#829A3D", "#B83939", "#4472C4", "#E07C24", "#70AD47", "#9966CC"]
+        country_colors = ",".join(colors[:len(countries)])
+        
+    else:
+        # Single country/total timeline
+        daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
+        
+        header_row = "<tr><th>Date</th><th>Total Jobs</th></tr>"
+        
+        data_rows = []
+        for _, row in daily.iterrows():
+            date_str = row['DATE'].strftime('%Y-%m-%d')
+            total_jobs = int(row['TOTAL_JOBS'])
+            data_rows.append(f"<tr><td>{date_str}</td><td>{total_jobs}</td></tr>")
+        
+        table_html = f"""<table><tbody>{header_row}{''.join(data_rows)}</tbody></table>"""
+        country_colors = "#829A3D"
+    
+    if not table_html or "<tr><td>" not in table_html:
+        return "<p>No timeline data available.</p>"
+    
+    chart = f"""
+<h3>{title}</h3>
+<ac:structured-macro ac:name="chart">
+  <ac:parameter ac:name="type">line</ac:parameter>
+  <ac:parameter ac:name="title">{title}</ac:parameter>
+  <ac:parameter ac:name="width">1200</ac:parameter>
+  <ac:parameter ac:name="height">500</ac:parameter>
+  <ac:parameter ac:name="3D">false</ac:parameter>
+  <ac:parameter ac:name="legend">true</ac:parameter>
+  <ac:parameter ac:name="orientation">vertical</ac:parameter>
+  <ac:parameter ac:name="stacked">false</ac:parameter>
+  <ac:parameter ac:name="showValues">true</ac:parameter>
+  <ac:parameter ac:name="xaxisLabel">Date</ac:parameter>
+  <ac:parameter ac:name="yaxisLabel">Jobs</ac:parameter>
+  <ac:parameter ac:name="colors">{country_colors}</ac:parameter>
+  <ac:parameter ac:name="dataDisplay">after</ac:parameter>
   <ac:rich-text-body>
     {table_html}
   </ac:rich-text-body>
@@ -608,6 +686,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         peaks_section = generate_global_peaks_section(df, baseline) if monthly else ""
         jobs_data_table = generate_jobs_data_table(df, baseline) if monthly else ""
         daily_chart = generate_daily_total_single_series(df, baseline, "Daily Total Jobs")
+        timeline_chart = generate_timeline_chart(df, baseline, "Task Usage Timeline")
 
         # Create page content
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -621,6 +700,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
 {jobs_data_table}
 {peaks_section}
 {daily_chart}
+{timeline_chart}
 <hr />
 <p><em>Note: This report shows the task usage data{' (TEST MODE)' if test_mode else ''}.</em></p>
 """
@@ -701,6 +781,7 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
         global_peaks = generate_global_peaks_section(all_df, baseline) if monthly else ""
         jobs_data_table = generate_jobs_data_table(all_df, baseline) if monthly else ""
         global_daily = generate_daily_total_single_series(all_df, baseline, "Daily Total Jobs (All Countries)")
+        timeline_chart = generate_timeline_chart(all_df, baseline, "Task Usage Timeline (All Countries)")
 
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         user = os.environ.get('USER', 'automated')
@@ -713,6 +794,7 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
 {jobs_data_table}
 {global_peaks}
 {global_daily}
+{timeline_chart}
 <hr />
 <p><em>Note: This report shows aggregated data from multiple countries{' (TEST MODE)' if test_mode else ''}.</em></p>
 """
