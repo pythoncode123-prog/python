@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main workflow launcher - FIXED VERSION
+Main workflow launcher - Enhanced with CSV auto-discovery.
 
 Key features:
 - Single or multi-country execution
@@ -10,6 +10,7 @@ Key features:
 - Test mode (--test) uses a predefined test CSV (handled inside workflow)
 - --no-publish skips Confluence upload
 - Multi-country support with simple date-based folder organization
+- AUTO-DISCOVERY: Automatically detects CSV countries from files matching pattern
 """
 
 import os
@@ -22,6 +23,8 @@ from datetime import datetime, timedelta
 import argparse
 import tempfile
 import shutil
+import glob
+import pandas as pd
 
 # Make project root importable
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -284,13 +287,420 @@ def analyze_csv_file(csv_path):
 
 
 # ---------------------------------------------------------------------------
-# Multi-Country Workflow Function - FIXED
+# NEW: CSV Auto-Discovery Functions
+# ---------------------------------------------------------------------------
+
+def auto_discover_csv_countries(csv_path, target_month):
+    """
+    Auto-discover CSV countries by scanning directory for files matching pattern:
+    {CountryCode}_Usagereport_{YYYYMM}.csv
+    
+    Args:
+        csv_path: Directory path to scan for CSV files
+        target_month: Target month in YYYYMM format
+    
+    Returns:
+        List of discovered countries with their file paths
+    """
+    if not os.path.exists(csv_path):
+        logging.warning(f"CSV countries path does not exist: {csv_path}")
+        return []
+    
+    # Pattern: {CountryCode}_Usagereport_{YYYYMM}.csv
+    pattern = f"*_Usagereport_{target_month}.csv"
+    search_pattern = os.path.join(csv_path, pattern)
+    
+    logging.info(f"Scanning for CSV files: {search_pattern}")
+    
+    discovered_countries = []
+    matching_files = glob.glob(search_pattern)
+    
+    for file_path in matching_files:
+        filename = os.path.basename(file_path)
+        
+        # Extract country code using regex
+        match = re.match(r'^([A-Z]{2,3})_Usagereport_\d{6}\.csv$', filename)
+        if match:
+            country_code = match.group(1)
+            
+            discovered_countries.append({
+                'name': country_code,
+                'country_code': country_code,
+                'file_path': file_path,
+                'filename': filename
+            })
+            
+            logging.info(f"Discovered CSV country: {country_code} -> {filename}")
+        else:
+            logging.warning(f"File doesn't match expected pattern: {filename}")
+    
+    logging.info(f"Auto-discovered {len(discovered_countries)} CSV countries for {target_month}")
+    return discovered_countries
+
+
+def process_csv_file_countries(output_dir, target_month, test_mode=False):
+    """
+    Process countries that provide CSV files directly using auto-discovery.
+    """
+    # Load config to get CSV path
+    try:
+        with open('config/config.json', 'r') as f:
+            config = json.load(f)
+    except Exception as e:
+        logging.warning(f"Could not load config for CSV countries: {e}")
+        return []
+    
+    csv_path = config.get('CSV_COUNTRIES_PATH')
+    if not csv_path:
+        logging.info("No CSV_COUNTRIES_PATH configured, skipping CSV file countries")
+        return []
+    
+    # Auto-discover CSV countries
+    csv_countries = auto_discover_csv_countries(csv_path, target_month)
+    
+    if not csv_countries:
+        logging.info(f"No CSV countries found for month {target_month}")
+        return []
+    
+    logging.info(f"Processing {len(csv_countries)} auto-discovered CSV countries")
+    
+    results = []
+    
+    for csv_country in csv_countries:
+        country_name = csv_country['name']
+        country_code = csv_country['country_code']
+        source_file_path = csv_country['file_path']
+        
+        # Output file in our processing directory
+        output_file = os.path.join(output_dir, f"data_{country_name.lower()}.csv")
+        
+        logging.info(f"Processing CSV country: {country_name} from {source_file_path}")
+        
+        if test_mode:
+            # Create dummy test data for CSV countries
+            create_test_csv_country_data(output_file, country_name, target_month)
+            results.append({
+                'name': country_name,
+                'csv_file': output_file,
+                'success': True,
+                'source': 'csv_file'
+            })
+            logging.info(f"Created test data for CSV country: {country_name}")
+            continue
+        
+        try:
+            # Process the actual CSV file
+            success = process_single_csv_country_file(
+                source_file_path, output_file, country_name, target_month
+            )
+            
+            results.append({
+                'name': country_name,
+                'csv_file': output_file,
+                'success': success,
+                'source': 'csv_file'
+            })
+            
+            if success:
+                logging.info(f"Successfully processed CSV country: {country_name}")
+            else:
+                logging.error(f"Failed to process CSV country: {country_name}")
+                
+        except Exception as e:
+            logging.error(f"Error processing CSV country {country_name}: {e}")
+            results.append({
+                'name': country_name,
+                'csv_file': output_file,
+                'success': False,
+                'source': 'csv_file'
+            })
+    
+    return results
+
+
+def process_single_csv_country_file(source_file, output_file, country_name, target_month):
+    """
+    Process a single CSV file from a country and convert it to our standard format.
+    
+    Expected input format: NET_DATE, CTM_HOST_NAME, FVALUE, JOBS (like your Excel screenshot)
+    Output format: NET_DATE, TOTAL_JOBS (aggregated by date)
+    """
+    try:
+        # Read the source CSV
+        df = pd.read_csv(source_file)
+        
+        logging.info(f"Loaded CSV for {country_name}: {len(df)} rows")
+        logging.info(f"Columns: {list(df.columns)}")
+        
+        # Handle different possible column names for jobs
+        jobs_column = None
+        for col in ['JOBS', 'JOBS_PER_DAY', 'TOTAL_JOBS', 'JOB_COUNT', 'FVALUE']:
+            if col in df.columns:
+                jobs_column = col
+                break
+        
+        if jobs_column is None:
+            # If no jobs column found, assume the last numeric column
+            numeric_cols = df.select_dtypes(include=['number']).columns
+            if len(numeric_cols) > 0:
+                jobs_column = numeric_cols[-1]
+                logging.warning(f"No standard jobs column found, using: {jobs_column}")
+            else:
+                logging.error(f"No numeric column found for jobs in {country_name}")
+                return False
+        
+        # Handle date column
+        date_column = None
+        for col in ['NET_DATE', 'DATE', 'DAY', 'REPORT_DATE']:
+            if col in df.columns:
+                date_column = col
+                break
+        
+        if date_column is None:
+            logging.error(f"No date column found in {country_name}")
+            return False
+        
+        # Convert date column to datetime
+        df[date_column] = pd.to_datetime(df[date_column], errors='coerce')
+        
+        # Filter to target month if needed
+        target_year = int(target_month[:4])
+        target_month_num = int(target_month[4:6])
+        
+        df_filtered = df[
+            (df[date_column].dt.year == target_year) & 
+            (df[date_column].dt.month == target_month_num)
+        ].copy()
+        
+        if df_filtered.empty:
+            logging.warning(f"No data found for target month {target_month} in {country_name}")
+            return False
+        
+        # Group by date and sum jobs
+        daily_totals = df_filtered.groupby(date_column)[jobs_column].sum().reset_index()
+        
+        # Rename columns to our standard format
+        daily_totals.columns = ['NET_DATE', 'TOTAL_JOBS']
+        
+        # Format date as string (to match database output format)
+        daily_totals['NET_DATE'] = daily_totals['NET_DATE'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Save to output file
+        daily_totals.to_csv(output_file, index=False)
+        
+        logging.info(f"Processed {country_name}: {len(daily_totals)} daily records")
+        logging.info(f"Date range: {daily_totals['NET_DATE'].min()} to {daily_totals['NET_DATE'].max()}")
+        logging.info(f"Total jobs: {daily_totals['TOTAL_JOBS'].sum():,}")
+        
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error processing CSV file for {country_name}: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return False
+
+
+def create_test_csv_country_data(output_file, country_name, target_month):
+    """
+    Create test data for CSV countries in test mode.
+    """
+    from datetime import datetime, timedelta
+    
+    # Parse target month
+    target_year = int(target_month[:4])
+    target_month_num = int(target_month[4:6])
+    
+    # Generate test data for the month
+    start_date = datetime(target_year, target_month_num, 1)
+    
+    # Generate daily data for the month
+    dates = []
+    jobs = []
+    
+    for day in range(1, 32):  # Up to 31 days
+        try:
+            date = datetime(target_year, target_month_num, day)
+            dates.append(date.strftime('%Y-%m-%d %H:%M:%S'))
+            # Vary jobs by country
+            base_jobs = {'MX': 3000, 'BR': 2500, 'CA': 1800}.get(country_name, 2000)
+            daily_jobs = base_jobs + (day * 50) + (hash(country_name) % 500)
+            jobs.append(daily_jobs)
+        except ValueError:
+            # Invalid date (e.g., Feb 31)
+            break
+    
+    # Create DataFrame
+    test_df = pd.DataFrame({
+        'NET_DATE': dates,
+        'TOTAL_JOBS': jobs
+    })
+    
+    # Save test data
+    test_df.to_csv(output_file, index=False)
+    logging.info(f"Created test data for {country_name}: {len(test_df)} records")
+
+
+# ---------------------------------------------------------------------------
+# Enhanced Multi-Country Workflow Function
+# ---------------------------------------------------------------------------
+
+def run_workflow_multi_enhanced(countries, default_output_csv, execution_timestamp, execution_user, 
+                               test_mode=False, publish_test=True, target_month=None):
+    """
+    Enhanced multi-country workflow that handles both database countries and CSV file countries.
+    
+    Args:
+        countries: List of database countries from countries.json
+        target_month: String in format 'YYYYMM' (e.g., '202509' for September 2025)
+    """
+    # If no target month specified, use current month
+    if not target_month:
+        target_month = datetime.now().strftime('%Y%m')
+    
+    logging.info(f"="*60)
+    logging.info(f"Starting ENHANCED multi-country workflow for month: {target_month}")
+    logging.info(f"Database countries: {[c['name'] for c in countries]}")
+    logging.info(f"="*60)
+    
+    # Create date-based folder for organization
+    today_folder = datetime.now().strftime('%Y-%m-%d')
+    output_dir = os.path.join('reports', today_folder)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    original_cwd = os.getcwd()
+    
+    try:
+        # Step 1: Process database countries (existing logic)
+        country_results = []
+        for country in countries:
+            country_name = country['name']
+            config_file = country['config_file']
+            query_file = country['query_file']
+            output_csv = os.path.join(output_dir, f"data_{country_name.lower()}.csv")
+            
+            logging.info(f"Processing database country: {country_name}")
+            
+            if test_mode:
+                # Create dummy test data for database countries
+                with open(output_csv, 'w') as f:
+                    f.write("NET_DATE,TOTAL_JOBS\n")
+                    for day in range(1, 31):
+                        date_str = f"2025-09-{day:02d}"
+                        jobs = 5000 + (day * 100)
+                        f.write(f"{date_str},{jobs}\n")
+                logging.info(f"Created test data for {country_name}")
+            else:
+                result = run_workflow(
+                    config_file, query_file, output_csv,
+                    execution_timestamp, execution_user,
+                    test_mode=test_mode, publish_test=False
+                )
+                
+                if result != 0:
+                    logging.error(f"Failed to process database country {country_name}")
+                    continue
+            
+            if os.path.exists(output_csv):
+                country_results.append({
+                    'name': country_name,
+                    'csv_file': output_csv,
+                    'success': True,
+                    'source': 'database'
+                })
+                logging.info(f"Successfully processed database country: {country_name}")
+        
+        # Step 2: Process CSV file countries
+        csv_countries_processed = process_csv_file_countries(
+            output_dir, target_month, test_mode
+        )
+        
+        # Add CSV countries to results
+        country_results.extend(csv_countries_processed)
+        
+        # Step 3: Verify we have data to process
+        successful_countries = [r for r in country_results if r['success']]
+        if not successful_countries:
+            logging.error("No countries processed successfully")
+            return False
+        
+        # Log summary of data sources
+        db_countries = [r for r in successful_countries if r['source'] == 'database']
+        csv_countries = [r for r in successful_countries if r['source'] == 'csv_file']
+        
+        logging.info(f"Data sources summary:")
+        logging.info(f"  Database countries: {len(db_countries)} - {[r['name'] for r in db_countries]}")
+        logging.info(f"  CSV file countries: {len(csv_countries)} - {[r['name'] for r in csv_countries]}")
+        
+        # Step 4: Change to output directory and aggregate all data
+        os.chdir(output_dir)
+        
+        csv_files = [f for f in os.listdir('.') if f.startswith('data_') and f.endswith('.csv')]
+        logging.info(f"CSV files found for aggregation: {csv_files}")
+        
+        # Use CSV processor to aggregate all country data
+        processor = CSVProcessor(execution_timestamp, execution_user)
+        success = processor.process_all_files()
+        
+        if not success:
+            logging.error("Failed to aggregate country data")
+            return False
+        
+        # Step 5: Copy aggregated reports back and publish
+        aggregated_report = "task_usage_report_by_region.csv"
+        main_aggregated_path = os.path.join(original_cwd, aggregated_report)
+        
+        if os.path.exists(aggregated_report):
+            shutil.copy2(aggregated_report, main_aggregated_path)
+            logging.info(f"Copied aggregated report to {main_aggregated_path}")
+        
+        os.chdir(original_cwd)
+        
+        # Step 6: Publish to Confluence
+        if publish_test:
+            logging.info("Publishing aggregated report to Confluence...")
+            publish_success = publish_to_confluence(
+                report_file=aggregated_report,
+                test_mode=test_mode,
+                skip_actual_upload=False
+            )
+            if not publish_success:
+                logging.error("Failed to publish to Confluence")
+                return False
+        
+        # Final summary
+        logging.info("="*60)
+        logging.info("ENHANCED MULTI-COUNTRY WORKFLOW SUMMARY")
+        logging.info("="*60)
+        logging.info(f"Target Month: {target_month}")
+        logging.info(f"Total Countries Processed: {len(successful_countries)}")
+        logging.info(f"Database Countries: {len(db_countries)}")
+        logging.info(f"CSV File Countries: {len(csv_countries)}")
+        
+        for result in successful_countries:
+            status = "✓ SUCCESS"
+            source_info = f"({result['source']})"
+            logging.info(f"  {result['name']}: {status} {source_info}")
+        
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error in enhanced multi-country workflow: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return False
+    finally:
+        os.chdir(original_cwd)
+
+
+# ---------------------------------------------------------------------------
+# Multi-Country Workflow Function (Original)
 # ---------------------------------------------------------------------------
 
 def run_workflow_multi(countries, default_output_csv, execution_timestamp, execution_user, test_mode=False, publish_test=True):
     """
     Run workflow for multiple countries and aggregate results.
-    FIXED: Proper CSV processor call without invalid parameters.
+    Simple approach - create date folder and process countries there.
     """
     # Create date-based folder for organization
     today_folder = datetime.now().strftime('%Y-%m-%d')
@@ -382,14 +792,10 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
         csv_files = [f for f in os.listdir('.') if f.startswith('data_') and f.endswith('.csv')]
         logging.info(f"CSV files found for processing: {csv_files}")
         
-        # Use the FIXED CSV processor - NO PARAMETERS
+        # Use the FIXED CSV processor
         logging.info("Using FIXED CSV processor...")
         processor = CSVProcessor(execution_timestamp, execution_user)
-        
-        # FIXED: Call process_all_files() without any parameters
-        # It will automatically find and process all data_*.csv files in the current directory
-        success = processor.process_all_files()
-        
+        success = processor.process_all_files()  # No parameters needed
         logging.info(f"Fixed CSV processor returned: {success}")
         
         if not success:
@@ -473,8 +879,6 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
         
     except Exception as e:
         logging.error(f"Error in multi-country workflow: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
         return False
     finally:
         # Ensure we're back in the original directory
@@ -486,16 +890,70 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Run data workflow")
+    parser = argparse.ArgumentParser(description="Enhanced data workflow with CSV auto-discovery")
     parser.add_argument("--test", action="store_true", help="Run in test mode using predefined test CSV")
     parser.add_argument("--no-publish", action="store_true", help="Skip actual publishing to Confluence")
     parser.add_argument("--monthly", action="store_true", help="Use previous month date range in SQL query")
     parser.add_argument("--daily", action="store_true", help="Use year-to-date range in SQL query")
     parser.add_argument("--countries-config", help="Path to countries JSON to run multi-country workflow")
+    parser.add_argument("--target-month", help="Target month in YYYYMM format (e.g., 202509) - optional, defaults to current month")
+    parser.add_argument("--csv-countries-only", action="store_true", help="Process only CSV file countries using auto-discovery")
+    parser.add_argument("--list-csv-countries", action="store_true", help="List available CSV countries for target month")
     args = parser.parse_args()
 
     setup_logging()
     os.makedirs('config', exist_ok=True)
+
+    # Determine target month (defaults to current month if not specified)
+    target_month = args.target_month or datetime.now().strftime('%Y%m')
+
+    # Handle CSV-only operations first
+    if args.list_csv_countries:
+        # Just list available CSV countries without processing
+        try:
+            with open('config/config.json', 'r') as f:
+                config = json.load(f)
+        except Exception as e:
+            logging.error(f"Could not load config: {e}")
+            return 1
+        
+        csv_path = config.get('CSV_COUNTRIES_PATH')
+        if not csv_path:
+            logging.error("No CSV_COUNTRIES_PATH configured")
+            return 1
+        
+        csv_countries = auto_discover_csv_countries(csv_path, target_month)
+        
+        print(f"\nAvailable CSV countries for {target_month}:")
+        print("=" * 50)
+        if csv_countries:
+            for country in csv_countries:
+                print(f"  {country['country_code']}: {country['filename']}")
+        else:
+            print("  No CSV countries found")
+        print()
+        
+        return 0
+
+    if args.csv_countries_only:
+        # Process only CSV file countries
+        logging.info(f"Processing CSV file countries only for month {target_month}")
+        
+        output_dir = os.path.join('reports', datetime.now().strftime('%Y-%m-%d'))
+        os.makedirs(output_dir, exist_ok=True)
+        
+        csv_results = process_csv_file_countries(output_dir, target_month, args.test)
+        
+        successful_csv = [r for r in csv_results if r['success']]
+        
+        if successful_csv:
+            logging.info(f"Successfully processed {len(successful_csv)} CSV countries")
+            for result in successful_csv:
+                logging.info(f"  ✓ {result['name']}")
+            return 0
+        else:
+            logging.error("No CSV countries processed successfully")
+            return 1
 
     # Basic presence checks for single-country DB files if not test & not multi
     if not args.test and not args.countries_config:
@@ -528,7 +986,7 @@ def main():
         return 1
 
     # -----------------------------------------------------------------------
-    # Multi-country Flow
+    # Multi-country Flow (Enhanced)
     # -----------------------------------------------------------------------
     if args.countries_config:
         try:
@@ -577,13 +1035,15 @@ def main():
         elif args.daily:
             update_confluence_page_title(TITLE_CONFIG_FILE, "", is_daily=True)
 
-        result = run_workflow_multi(
+        # Use enhanced workflow that handles both database and CSV countries
+        result = run_workflow_multi_enhanced(
             countries=prepared,
             default_output_csv=OUTPUT_CSV,
             execution_timestamp=EXECUTION_TIMESTAMP,
             execution_user=EXECUTION_USER,
             test_mode=args.test,
-            publish_test=not args.no_publish
+            publish_test=not args.no_publish,
+            target_month=target_month
         )
         return 0 if result else 1
 
