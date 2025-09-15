@@ -10,7 +10,7 @@ import re
 from typing import Tuple, Optional, Dict, List
 
 # -------------------------------------------------------------
-# Confluence Publisher (Peaks + Daily Charts) - Fixed Config Path
+# Confluence Publisher - Complete Version with All Updates
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -256,6 +256,7 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
                            chart_title: str) -> str:
     """
     Create chart with transposed data (dates as columns, series as rows)
+    Styled to match the reference chart with red baseline and green total jobs
     """
     if peaks_df.empty:
         return f"<p>No data for {chart_title}.</p>"
@@ -263,8 +264,8 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
     # Sort by date
     peaks_df = peaks_df.sort_values('DATE')
     
-    # Format dates as MM-DD
-    date_format = peaks_df['DATE'].dt.strftime('%m-%d')
+    # Format dates as YYYY-MM-DD to match the reference
+    date_format = peaks_df['DATE'].dt.strftime('%Y-%m-%d')
     
     # First row: Date headers
     header_row = "<tr><th>Date</th>"
@@ -272,14 +273,14 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
         header_row += f"<th>{date}</th>"
     header_row += "</tr>"
     
-    # Second row: Baseline values
+    # Second row: Baseline values (will be red bars)
     baseline_row = "<tr><td>Baseline</td>"
     for _ in range(len(peaks_df)):
         baseline_row += f"<td>{int(baseline)}</td>"
     baseline_row += "</tr>"
     
-    # Third row: Total Jobs values
-    jobs_row = "<tr><td>Total Jobs</td>"
+    # Third row: Total Jobs values (will be green bars)
+    jobs_row = "<tr><td>TOTAL_JOBS</td>"
     for _, row in peaks_df.iterrows():
         jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
     jobs_row += "</tr>"
@@ -290,12 +291,15 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
   <ac:parameter ac:name="type">bar</ac:parameter>
   <ac:parameter ac:name="orientation">vertical</ac:parameter>
   <ac:parameter ac:name="3D">true</ac:parameter>
-  <ac:parameter ac:name="width">600</ac:parameter>
-  <ac:parameter ac:name="height">400</ac:parameter>
+  <ac:parameter ac:name="width">800</ac:parameter>
+  <ac:parameter ac:name="height">500</ac:parameter>
   <ac:parameter ac:name="legend">true</ac:parameter>
   <ac:parameter ac:name="dataDisplay">true</ac:parameter>
   <ac:parameter ac:name="stacked">false</ac:parameter>
   <ac:parameter ac:name="showValues">true</ac:parameter>
+  <ac:parameter ac:name="colors">#B22222,#8FBC8F</ac:parameter>
+  <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
+  <ac:parameter ac:name="imageFormat">png</ac:parameter>
   <ac:rich-text-body>
     <table>
       <tbody>
@@ -307,6 +311,85 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
   </ac:rich-text-body>
 </ac:structured-macro>
 """
+
+def peaks_detail_table(peaks_df: pd.DataFrame,
+                       baseline: int,
+                       label: str) -> str:
+    if peaks_df.empty:
+        return ""
+    ranked = peaks_df.sort_values('TOTAL_JOBS', ascending=False).reset_index(drop=True)
+    rank_map = {row.DATE: idx + 1 for idx, row in ranked.iterrows()}
+    display = peaks_df.sort_values('DATE').copy()
+    display['Variation'] = baseline - display['TOTAL_JOBS']
+    rows = ["<tr><th>Rank</th><th>Date</th><th>Total Jobs</th><th>Baseline</th><th>Variation</th></tr>"]
+    for _, r in display.iterrows():
+        variation = int(r['Variation'])
+        style = 'style="background-color:#90EE90;"' if variation > 0 else 'style="background-color:#FFB6C1;"'
+        rows.append(
+            f"<tr><td>{rank_map[r['DATE']]}</td>"
+            f"<td>{r['DATE'].strftime('%Y-%m-%d')}</td>"
+            f"<td>{int(r['TOTAL_JOBS'])}</td>"
+            f"<td>{baseline}</td>"
+            f"<td {style}>{variation}</td></tr>"
+        )
+    return f"<h4>Top 4 Peaks Detail ({label})</h4><table class='wrapped'><tbody>{''.join(rows)}</tbody></table>"
+
+def generate_jobs_data_table(df: pd.DataFrame, baseline: int, limit: int = 31) -> str:
+    """
+    Generate the Jobs Data table showing Date, Baseline, Total Jobs, and Variation.
+    Similar to the table shown in the BMS Report screenshot.
+    """
+    # Group by date and sum total jobs
+    daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
+    
+    if daily.empty:
+        return "<p>No daily data available.</p>"
+    
+    # Limit to specified number of days (default 31 for monthly)
+    if len(daily) > limit:
+        daily = daily.tail(limit)
+    
+    # Start the table
+    html = """
+<h3>Jobs Data</h3>
+<table class='wrapped'>
+<tbody>
+<tr>
+    <th>Date</th>
+    <th>Baseline</th>
+    <th>Total Jobs</th>
+    <th>Variation</th>
+</tr>
+"""
+    
+    # Add data rows
+    for _, row in daily.iterrows():
+        date_str = row['DATE'].strftime('%m/%d/%Y')
+        total_jobs = int(row['TOTAL_JOBS'])
+        variation = total_jobs - baseline
+        
+        # Color coding for variation
+        if variation > 0:
+            var_style = 'style="background-color:#90EE90;"'  # Light green for positive
+            var_text = f"+{variation:,}"
+        elif variation < 0:
+            var_style = 'style="background-color:#FFB6C1;"'  # Light red for negative
+            var_text = f"{variation:,}"
+        else:
+            var_style = ''
+            var_text = "0"
+        
+        html += f"""
+<tr>
+    <td>{date_str}</td>
+    <td>{baseline:,}</td>
+    <td>{total_jobs:,}</td>
+    <td {var_style}>{var_text}</td>
+</tr>
+"""
+    
+    html += "</tbody></table>"
+    return html
 
 def generate_global_peaks_section(df: pd.DataFrame,
                                   baseline: int,
@@ -323,7 +406,7 @@ def generate_daily_total_single_series(df: pd.DataFrame,
                                        baseline: int,
                                        title: str = "Daily Total Jobs") -> str:
     """
-    Generate daily totals chart.
+    Generate daily totals chart with improved styling to match reference.
     """
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
     if daily.empty:
@@ -341,8 +424,8 @@ def generate_daily_total_single_series(df: pd.DataFrame,
         header_row += f"<th>{date}</th>"
     header_row += "</tr>"
     
-    # Create data row
-    data_row = "<tr><td>Total Jobs</td>"
+    # Create data row (using TOTAL_JOBS as label to match reference)
+    data_row = "<tr><td>TOTAL_JOBS</td>"
     for value in date_columns.values():
         data_row += f"<td>{value}</td>"
     data_row += "</tr>"
@@ -359,7 +442,14 @@ def generate_daily_total_single_series(df: pd.DataFrame,
   <ac:parameter ac:name="3D">true</ac:parameter>
   <ac:parameter ac:name="legend">false</ac:parameter>
   <ac:parameter ac:name="orientation">vertical</ac:parameter>
-  <ac:parameter ac:name="colors">#6B8E23</ac:parameter>
+  <ac:parameter ac:name="labelAngle">45</ac:parameter>
+  <ac:parameter ac:name="stacked">false</ac:parameter>
+  <ac:parameter ac:name="showValues">true</ac:parameter>
+  <ac:parameter ac:name="xaxisLabel">Date</ac:parameter>
+  <ac:parameter ac:name="yaxisLabel">Jobs</ac:parameter>
+  <ac:parameter ac:name="colors">#8FBC8F</ac:parameter>
+  <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
+  <ac:parameter ac:name="imageFormat">png</ac:parameter>
   <ac:rich-text-body>
     {table_html}
   </ac:rich-text-body>
@@ -512,6 +602,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
 
         # Generate content sections
         peaks_section = generate_global_peaks_section(df, baseline) if monthly else ""
+        jobs_data_table = generate_jobs_data_table(df, baseline) if monthly else ""
         daily_chart = generate_daily_total_single_series(df, baseline, "Daily Total Jobs")
 
         # Create page content
@@ -522,6 +613,8 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
 <h1>Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
 <p><strong>Generated by:</strong> {user}</p>
+<h2>Overall Monthly Task Usage Report</h2>
+{jobs_data_table}
 {peaks_section}
 {daily_chart}
 <hr />
@@ -602,6 +695,7 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
 
         # Generate content
         global_peaks = generate_global_peaks_section(all_df, baseline) if monthly else ""
+        jobs_data_table = generate_jobs_data_table(all_df, baseline) if monthly else ""
         global_daily = generate_daily_total_single_series(all_df, baseline, "Daily Total Jobs (All Countries)")
 
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -611,6 +705,8 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
 <h1>Multi-Country Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
 <p><strong>Generated by:</strong> {user}</p>
+<h2>Overall Monthly Task Usage Report</h2>
+{jobs_data_table}
 {global_peaks}
 {global_daily}
 <hr />
