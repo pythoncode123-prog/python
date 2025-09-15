@@ -402,7 +402,7 @@ def generate_daily_total_single_series(df: pd.DataFrame,
                                        baseline: int,
                                        title: str = "Daily Total Jobs") -> str:
     """
-    Generate daily totals chart with improved styling to match reference.
+    Generate daily totals chart with single green color and percentage labels.
     """
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
     if daily.empty:
@@ -410,9 +410,14 @@ def generate_daily_total_single_series(df: pd.DataFrame,
     
     # Convert to the format needed for the chart
     date_columns = {}
+    percentages = {}
     for _, row in daily.iterrows():
         date_str = row['DATE'].strftime('%Y-%m-%d')
-        date_columns[date_str] = int(row['TOTAL_JOBS'])
+        total_jobs = int(row['TOTAL_JOBS'])
+        date_columns[date_str] = total_jobs
+        # Calculate percentage relative to baseline
+        percentage = (total_jobs / baseline * 100) if baseline > 0 else 0
+        percentages[date_str] = f"{percentage:.1f}%"
     
     # Create header row
     header_row = "<tr><th>Series</th>"
@@ -420,11 +425,17 @@ def generate_daily_total_single_series(df: pd.DataFrame,
         header_row += f"<th>{date}</th>"
     header_row += "</tr>"
     
-    # Create data row (using TOTAL_JOBS as label to match reference)
-    data_row = "<tr><td>TOTAL_JOBS</td>"
+    # Create data row
+    data_row = "<tr><td>Total Jobs</td>"
     for value in date_columns.values():
         data_row += f"<td>{value}</td>"
     data_row += "</tr>"
+    
+    # Create percentage row for labels
+    percent_row = "<tr><td>Percentage</td>"
+    for pct in percentages.values():
+        percent_row += f"<td>{pct}</td>"
+    percent_row += "</tr>"
     
     table_html = f"""<table><tbody>{header_row}{data_row}</tbody></table>"""
     
@@ -443,9 +454,8 @@ def generate_daily_total_single_series(df: pd.DataFrame,
   <ac:parameter ac:name="showValues">true</ac:parameter>
   <ac:parameter ac:name="xaxisLabel">Date</ac:parameter>
   <ac:parameter ac:name="yaxisLabel">Jobs</ac:parameter>
-  <ac:parameter ac:name="colors">#8FBC8F</ac:parameter>
-  <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
-  <ac:parameter ac:name="imageFormat">png</ac:parameter>
+  <ac:parameter ac:name="colors">#829A3D</ac:parameter>
+  <ac:parameter ac:name="dataDisplay">after</ac:parameter>
   <ac:rich-text-body>
     {table_html}
   </ac:rich-text-body>
