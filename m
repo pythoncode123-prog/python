@@ -904,8 +904,20 @@ def main():
     setup_logging()
     os.makedirs('config', exist_ok=True)
 
-    # Determine target month (defaults to current month if not specified)
-    target_month = args.target_month or datetime.now().strftime('%Y%m')
+    # Determine target month with proper monthly logic
+    if args.target_month:
+        target_month = args.target_month
+    elif args.monthly:
+        # For monthly mode, use previous completed month (same as database logic)
+        today = datetime.now()
+        first_day_current = datetime(today.year, today.month, 1)
+        last_day_prev = first_day_current - timedelta(days=1)
+        target_month = last_day_prev.strftime('%Y%m')
+        logging.info(f"Monthly mode: targeting previous completed month {target_month}")
+    else:
+        # Default to current month for daily or no-flag runs
+        target_month = datetime.now().strftime('%Y%m')
+        logging.info(f"Default mode: targeting current month {target_month}")
 
     # Handle CSV-only operations first
     if args.list_csv_countries:
