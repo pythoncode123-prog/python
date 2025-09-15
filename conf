@@ -10,7 +10,7 @@ import re
 from typing import Tuple, Optional, Dict, List
 
 # -------------------------------------------------------------
-# Confluence Publisher - Complete Final Version
+# Confluence Publisher - Complete Final Version with Fixes
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -256,7 +256,7 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
                            chart_title: str) -> str:
     """
     Create chart with transposed data (dates as columns, series as rows)
-    Using simple color specification for red baseline and green total jobs
+    Using specific color codes: red #B83939 for baseline, green #829A3D for total jobs
     """
     if peaks_df.empty:
         return f"<p>No data for {chart_title}.</p>"
@@ -297,7 +297,7 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
   <ac:parameter ac:name="dataDisplay">true</ac:parameter>
   <ac:parameter ac:name="stacked">false</ac:parameter>
   <ac:parameter ac:name="showValues">true</ac:parameter>
-  <ac:parameter ac:name="colors">red,green</ac:parameter>
+  <ac:parameter ac:name="colors">#B83939,#829A3D</ac:parameter>
   <ac:rich-text-body>
     <table>
       <tbody>
@@ -335,6 +335,7 @@ def peaks_detail_table(peaks_df: pd.DataFrame,
 def generate_jobs_data_table(df: pd.DataFrame, baseline: int) -> str:
     """
     Generate the Jobs Data table showing ONLY TOP 4 PEAKS with Date, Baseline, Total Jobs, and Variation.
+    FIXED: Variance = Baseline - Total Jobs (positive when baseline is higher, negative when total jobs are higher)
     """
     # Group by date and sum total jobs
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
@@ -362,9 +363,9 @@ def generate_jobs_data_table(df: pd.DataFrame, baseline: int) -> str:
     for _, row in top_4_peaks.iterrows():
         date_str = row['DATE'].strftime('%m/%d/%Y')
         total_jobs = int(row['TOTAL_JOBS'])
-        variation = total_jobs - baseline
+        variation = baseline - total_jobs  # FIXED: Baseline - Total Jobs as requested
         
-        # Color coding for variation
+        # Color coding logic - positive (baseline higher) = green, negative (total jobs higher) = red
         if variation > 0:
             var_style = 'style="background-color:#90EE90;"'  # Light green for positive
             var_text = f"+{variation:,}"
@@ -403,6 +404,7 @@ def generate_daily_total_single_series(df: pd.DataFrame,
                                        title: str = "Daily Total Jobs") -> str:
     """
     Generate daily totals chart with single green color and percentage labels.
+    FIXED: Made X-axis labels vertical and increased chart height for better visibility
     """
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
     if daily.empty:
@@ -412,7 +414,8 @@ def generate_daily_total_single_series(df: pd.DataFrame,
     date_columns = {}
     percentages = {}
     for _, row in daily.iterrows():
-        date_str = row['DATE'].strftime('%Y-%m-%d')
+        # Use shorter date format for better readability
+        date_str = row['DATE'].strftime('%m-%d')  # Changed from full date to MM-DD
         total_jobs = int(row['TOTAL_JOBS'])
         date_columns[date_str] = total_jobs
         # Calculate percentage relative to baseline
@@ -431,12 +434,6 @@ def generate_daily_total_single_series(df: pd.DataFrame,
         data_row += f"<td>{value}</td>"
     data_row += "</tr>"
     
-    # Create percentage row for labels
-    percent_row = "<tr><td>Percentage</td>"
-    for pct in percentages.values():
-        percent_row += f"<td>{pct}</td>"
-    percent_row += "</tr>"
-    
     table_html = f"""<table><tbody>{header_row}{data_row}</tbody></table>"""
     
     chart = f"""
@@ -445,17 +442,18 @@ def generate_daily_total_single_series(df: pd.DataFrame,
   <ac:parameter ac:name="type">bar</ac:parameter>
   <ac:parameter ac:name="title">{title}</ac:parameter>
   <ac:parameter ac:name="width">1200</ac:parameter>
-  <ac:parameter ac:name="height">520</ac:parameter>
+  <ac:parameter ac:name="height">600</ac:parameter>
   <ac:parameter ac:name="3D">true</ac:parameter>
   <ac:parameter ac:name="legend">false</ac:parameter>
   <ac:parameter ac:name="orientation">vertical</ac:parameter>
-  <ac:parameter ac:name="labelAngle">45</ac:parameter>
+  <ac:parameter ac:name="labelAngle">90</ac:parameter>
   <ac:parameter ac:name="stacked">false</ac:parameter>
   <ac:parameter ac:name="showValues">true</ac:parameter>
   <ac:parameter ac:name="xaxisLabel">Date</ac:parameter>
   <ac:parameter ac:name="yaxisLabel">Jobs</ac:parameter>
   <ac:parameter ac:name="colors">#829A3D</ac:parameter>
   <ac:parameter ac:name="dataDisplay">after</ac:parameter>
+  <ac:parameter ac:name="fontSize">10</ac:parameter>
   <ac:rich-text-body>
     {table_html}
   </ac:rich-text-body>
