@@ -10,7 +10,7 @@ import re
 from typing import Tuple, Optional, Dict, List
 
 # -------------------------------------------------------------
-# Confluence Publisher - Complete Version with All Updates
+# Confluence Publisher - Complete Final Version
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -256,7 +256,7 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
                            chart_title: str) -> str:
     """
     Create chart with transposed data (dates as columns, series as rows)
-    Styled to match the reference chart with red baseline and green total jobs
+    Using simple color specification for red baseline and green total jobs
     """
     if peaks_df.empty:
         return f"<p>No data for {chart_title}.</p>"
@@ -264,8 +264,8 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
     # Sort by date
     peaks_df = peaks_df.sort_values('DATE')
     
-    # Format dates as YYYY-MM-DD to match the reference
-    date_format = peaks_df['DATE'].dt.strftime('%Y-%m-%d')
+    # Format dates as MM-DD for cleaner display
+    date_format = peaks_df['DATE'].dt.strftime('%m-%d')
     
     # First row: Date headers
     header_row = "<tr><th>Date</th>"
@@ -273,14 +273,14 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
         header_row += f"<th>{date}</th>"
     header_row += "</tr>"
     
-    # Second row: Baseline values (will be red bars)
+    # Second row: Baseline values
     baseline_row = "<tr><td>Baseline</td>"
     for _ in range(len(peaks_df)):
         baseline_row += f"<td>{int(baseline)}</td>"
     baseline_row += "</tr>"
     
-    # Third row: Total Jobs values (will be green bars)
-    jobs_row = "<tr><td>TOTAL_JOBS</td>"
+    # Third row: Total Jobs values
+    jobs_row = "<tr><td>Total Jobs</td>"
     for _, row in peaks_df.iterrows():
         jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
     jobs_row += "</tr>"
@@ -291,15 +291,13 @@ def peaks_transposed_chart(peaks_df: pd.DataFrame,
   <ac:parameter ac:name="type">bar</ac:parameter>
   <ac:parameter ac:name="orientation">vertical</ac:parameter>
   <ac:parameter ac:name="3D">true</ac:parameter>
-  <ac:parameter ac:name="width">800</ac:parameter>
-  <ac:parameter ac:name="height">500</ac:parameter>
+  <ac:parameter ac:name="width">600</ac:parameter>
+  <ac:parameter ac:name="height">400</ac:parameter>
   <ac:parameter ac:name="legend">true</ac:parameter>
   <ac:parameter ac:name="dataDisplay">true</ac:parameter>
   <ac:parameter ac:name="stacked">false</ac:parameter>
   <ac:parameter ac:name="showValues">true</ac:parameter>
-  <ac:parameter ac:name="colors">#B22222,#8FBC8F</ac:parameter>
-  <ac:parameter ac:name="dataOrientation">vertical</ac:parameter>
-  <ac:parameter ac:name="imageFormat">png</ac:parameter>
+  <ac:parameter ac:name="colors">red,green</ac:parameter>
   <ac:rich-text-body>
     <table>
       <tbody>
@@ -334,24 +332,22 @@ def peaks_detail_table(peaks_df: pd.DataFrame,
         )
     return f"<h4>Top 4 Peaks Detail ({label})</h4><table class='wrapped'><tbody>{''.join(rows)}</tbody></table>"
 
-def generate_jobs_data_table(df: pd.DataFrame, baseline: int, limit: int = 31) -> str:
+def generate_jobs_data_table(df: pd.DataFrame, baseline: int) -> str:
     """
-    Generate the Jobs Data table showing Date, Baseline, Total Jobs, and Variation.
-    Similar to the table shown in the BMS Report screenshot.
+    Generate the Jobs Data table showing ONLY TOP 4 PEAKS with Date, Baseline, Total Jobs, and Variation.
     """
     # Group by date and sum total jobs
-    daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
+    daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
     
     if daily.empty:
         return "<p>No daily data available.</p>"
     
-    # Limit to specified number of days (default 31 for monthly)
-    if len(daily) > limit:
-        daily = daily.tail(limit)
+    # Get only top 4 peaks
+    top_4_peaks = daily.nlargest(4, 'TOTAL_JOBS').sort_values('DATE')
     
     # Start the table
     html = """
-<h3>Jobs Data</h3>
+<h3>Jobs Data - Top 4 Peaks</h3>
 <table class='wrapped'>
 <tbody>
 <tr>
@@ -362,8 +358,8 @@ def generate_jobs_data_table(df: pd.DataFrame, baseline: int, limit: int = 31) -
 </tr>
 """
     
-    # Add data rows
-    for _, row in daily.iterrows():
+    # Add data rows for top 4 only
+    for _, row in top_4_peaks.iterrows():
         date_str = row['DATE'].strftime('%m/%d/%Y')
         total_jobs = int(row['TOTAL_JOBS'])
         variation = total_jobs - baseline
