@@ -219,7 +219,7 @@ def sanitize_total_jobs(df: pd.DataFrame,
     return df
 
 # =============================================================
-# Peak Calculation
+# Peak Calculation - UPDATED TO EXCLUDE TODAY
 # =============================================================
 
 def latest_year_month(daily_df: pd.DataFrame) -> Tuple[int, int]:
@@ -238,6 +238,12 @@ def compute_top_peaks(daily_df: pd.DataFrame,
                       top_n: int,
                       year: Optional[int],
                       month: Optional[int]) -> Tuple[pd.DataFrame, int, int]:
+    """Compute top peaks for a specific month - excluding today if current month"""
+    today = datetime.now().date()
+    
+    # Filter out today's data
+    daily_df = daily_df[daily_df['DATE'].dt.date < today].copy()
+    
     month_df, y, m = filter_to_month(daily_df, year, month)
     if month_df.empty:
         return month_df, y, m
@@ -248,19 +254,25 @@ def compute_top_peaks(daily_df: pd.DataFrame,
     return peaks[['DATE', 'TOTAL_JOBS']], y, m
 
 def compute_top_peaks_ytd(daily_df: pd.DataFrame, top_n: int = 4) -> pd.DataFrame:
-    """Compute top N peaks for Year-To-Date (for daily reports)"""
+    """Compute top N peaks for Year-To-Date (for daily reports) - excluding today"""
     if daily_df.empty:
         return daily_df
     
-    # Get current year
-    current_year = datetime.now().year
+    # Get current date and year
+    today = datetime.now().date()
+    current_year = today.year
     
-    # Filter to current year
-    ytd_df = daily_df[daily_df['DATE'].dt.year == current_year].copy()
+    # Filter to current year AND exclude today's data
+    ytd_df = daily_df[
+        (daily_df['DATE'].dt.year == current_year) & 
+        (daily_df['DATE'].dt.date < today)  # Exclude today
+    ].copy()
     
     if ytd_df.empty:
-        # Fallback to all data if no current year data
-        ytd_df = daily_df.copy()
+        # Fallback to all data except today if no current year data
+        ytd_df = daily_df[daily_df['DATE'].dt.date < today].copy()
+    
+    logging.info(f"YTD data: from {ytd_df['DATE'].min()} to {ytd_df['DATE'].max()} (excluding today: {today})")
     
     # Get top N peaks by total jobs
     try:
@@ -358,9 +370,14 @@ def peaks_detail_table(peaks_df: pd.DataFrame,
 def generate_jobs_data_table(df: pd.DataFrame, baseline: int, is_daily: bool = False) -> str:
     """
     Generate the Jobs Data table showing ONLY TOP 4 PEAKS with Date, Baseline, Total Jobs, and Variation.
+    Excludes today's data.
     """
+    # Filter out today's data first
+    today = datetime.now().date()
+    df_filtered = df[df['DATE'].dt.date < today].copy()
+    
     # Group by date and sum total jobs
-    daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+    daily = df_filtered.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
     
     if daily.empty:
         return "<p>No daily data available.</p>"
@@ -422,11 +439,15 @@ def generate_global_peaks_section(df: pd.DataFrame,
                                   baseline: int,
                                   top_n: int = 4,
                                   is_daily: bool = False) -> str:
-    daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+    # Filter out today's data first
+    today = datetime.now().date()
+    df_filtered = df[df['DATE'].dt.date < today].copy()
+    
+    daily = df_filtered.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
     
     if is_daily:
         peaks = compute_top_peaks_ytd(daily, top_n)
-        chart_title = "4th Peak of YTD"
+        chart_title = "Top 4 Peaks of YTD"  # Changed title
     else:
         peaks, y, m = compute_top_peaks(daily, top_n, None, None)
         if peaks.empty:
@@ -442,10 +463,14 @@ def generate_global_peaks_section(df: pd.DataFrame,
 
 def generate_monthly_usage_chart(df: pd.DataFrame, baseline: int) -> str:
     """
-    Generate Overall Monthly Task Usage Report line chart
+    Generate Overall Monthly Task Usage Report line chart - excluding today's data
     """
+    # Filter out today's data
+    today = datetime.now().date()
+    df_filtered = df[df['DATE'].dt.date < today].copy()
+    
     # Group by date and sum
-    daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
+    daily = df_filtered.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
     
     if daily.empty:
         return "<p>No data for monthly usage chart.</p>"
@@ -498,7 +523,12 @@ def generate_monthly_usage_chart(df: pd.DataFrame, baseline: int) -> str:
 def generate_monthly_country_breakdown_chart(df: pd.DataFrame) -> str:
     """
     Generate monthly stacked bar chart broken down by country (like your screenshot)
+    Excludes today's data.
     """
+    # Filter out today's data
+    today = datetime.now().date()
+    df = df[df['DATE'].dt.date < today].copy()
+    
     # Check if we have country data
     country_col = None
     possible_country_cols = ['COUNTRY', 'Country', 'country', 'REGION', 'Region', 'region']
@@ -601,8 +631,13 @@ def generate_daily_total_single_series(df: pd.DataFrame,
                                        title: str = "Daily Total Jobs") -> str:
     """
     Generate daily totals chart - simple for monthly mode
+    Excludes today's data.
     """
-    daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
+    # Filter out today's data
+    today = datetime.now().date()
+    df_filtered = df[df['DATE'].dt.date < today].copy()
+    
+    daily = df_filtered.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
     if daily.empty:
         return "<p>No daily data.</p>"
     
@@ -650,7 +685,12 @@ def generate_country_summary_chart(df: pd.DataFrame,
                                   title: str = "Total Jobs by Country") -> str:
     """
     Generate bar chart showing total jobs per country with summary table.
+    Excludes today's data.
     """
+    # Filter out today's data
+    today = datetime.now().date()
+    df = df[df['DATE'].dt.date < today].copy()
+    
     # Check if we have country data
     country_col = None
     possible_country_cols = ['COUNTRY', 'Country', 'country', 'REGION', 'Region', 'region']
@@ -859,6 +899,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
 
         logging.info(f"Running in {'DAILY' if is_daily else 'MONTHLY'} mode")
         logging.info(f"Page title: {config['PAGE_TITLE']}")
+        logging.info(f"Excluding today's data: {datetime.now().date()}")
 
         # Load and sanitize data
         df, ok = load_csv_data(report_file)
@@ -880,7 +921,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
                 logging.error("Connection test failed.")
                 return False
 
-        # Generate content sections
+        # Generate content sections (all will exclude today's data now)
         peaks_section = generate_global_peaks_section(df, baseline, is_daily=is_daily)
         jobs_data_table = generate_jobs_data_table(df, baseline, is_daily=is_daily)
         monthly_usage_chart = generate_monthly_usage_chart(df, baseline)
@@ -904,6 +945,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         # Create page content
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         user = os.environ.get('USER', 'automated')
+        yesterday = (datetime.now().date() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
         
         title_suffix = " - YTD" if is_daily else ""
         
@@ -911,6 +953,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
 <h1>Task Usage Report{title_suffix}{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
 <p><strong>Generated by:</strong> {user}</p>
+<p><strong>Data through:</strong> {yesterday} (excludes today)</p>
 <h2>Overall Monthly Task Usage Report</h2>
 {jobs_data_table}
 {peaks_section}
@@ -919,7 +962,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
 {daily_chart}
 {country_chart}
 <hr />
-<p><em>Note: This report shows the task usage data{' (TEST MODE)' if test_mode else ''}.</em></p>
+<p><em>Note: This report shows the task usage data through {yesterday}{' (TEST MODE)' if test_mode else ''}.</em></p>
 """
 
         # Skip actual upload if requested
@@ -995,7 +1038,7 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
                 logging.error("Connection test failed.")
                 return False
 
-        # Generate content
+        # Generate content (all will exclude today's data)
         global_peaks = generate_global_peaks_section(all_df, baseline, is_daily=is_daily)
         jobs_data_table = generate_jobs_data_table(all_df, baseline, is_daily=is_daily)
         monthly_usage_chart = generate_monthly_usage_chart(all_df, baseline)
@@ -1015,6 +1058,7 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
 
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         user = os.environ.get('USER', 'automated')
+        yesterday = (datetime.now().date() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
         
         title_suffix = " - YTD" if is_daily else ""
         
@@ -1022,6 +1066,7 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
 <h1>Multi-Country Task Usage Report{title_suffix}{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
 <p><strong>Generated by:</strong> {user}</p>
+<p><strong>Data through:</strong> {yesterday} (excludes today)</p>
 <h2>Overall Monthly Task Usage Report</h2>
 {jobs_data_table}
 {global_peaks}
@@ -1030,7 +1075,7 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
 {global_daily}
 {country_chart}
 <hr />
-<p><em>Note: This report shows aggregated data from multiple countries{' (TEST MODE)' if test_mode else ''}.</em></p>
+<p><em>Note: This report shows aggregated data from multiple countries through {yesterday}{' (TEST MODE)' if test_mode else ''}.</em></p>
 """
 
         if skip_actual_upload:
