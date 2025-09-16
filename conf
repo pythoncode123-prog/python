@@ -10,7 +10,7 @@ import re
 from typing import Tuple, Optional, Dict, List
 
 # -------------------------------------------------------------
-# Confluence Publisher - Complete Final Version with Daily/Monthly Fixes
+# Confluence Publisher - Fixed YTD Peak Calculation for Daily Mode
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -219,7 +219,7 @@ def sanitize_total_jobs(df: pd.DataFrame,
     return df
 
 # =============================================================
-# Peak Calculation - UPDATED TO EXCLUDE TODAY
+# Peak Calculation - FIXED FOR YTD IN DAILY MODE
 # =============================================================
 
 def latest_year_month(daily_df: pd.DataFrame) -> Tuple[int, int]:
@@ -254,7 +254,10 @@ def compute_top_peaks(daily_df: pd.DataFrame,
     return peaks[['DATE', 'TOTAL_JOBS']], y, m
 
 def compute_top_peaks_ytd(daily_df: pd.DataFrame, top_n: int = 4) -> pd.DataFrame:
-    """Compute top N peaks for Year-To-Date (for daily reports) - excluding today"""
+    """
+    FIXED: Compute top N peaks for Year-To-Date (for daily reports) - excluding today
+    This function should NOT filter to any specific month, only to YTD
+    """
     if daily_df.empty:
         return daily_df
     
@@ -262,7 +265,8 @@ def compute_top_peaks_ytd(daily_df: pd.DataFrame, top_n: int = 4) -> pd.DataFram
     today = datetime.now().date()
     current_year = today.year
     
-    # Filter to current year AND exclude today's data
+    # IMPORTANT: Do NOT filter to any specific month, only filter to current year
+    # and exclude today's data
     ytd_df = daily_df[
         (daily_df['DATE'].dt.year == current_year) & 
         (daily_df['DATE'].dt.date < today)  # Exclude today
@@ -272,15 +276,29 @@ def compute_top_peaks_ytd(daily_df: pd.DataFrame, top_n: int = 4) -> pd.DataFram
         # Fallback to all data except today if no current year data
         ytd_df = daily_df[daily_df['DATE'].dt.date < today].copy()
     
-    logging.info(f"YTD data: from {ytd_df['DATE'].min()} to {ytd_df['DATE'].max()} (excluding today: {today})")
+    # Log the actual date range being used
+    if not ytd_df.empty:
+        min_date = ytd_df['DATE'].min()
+        max_date = ytd_df['DATE'].max()
+        total_days = len(ytd_df['DATE'].unique())
+        logging.info(f"YTD Peak Calculation: Using data from {min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')} ({total_days} unique days)")
+        logging.info(f"YTD data contains {len(ytd_df)} total records from year {current_year}")
     
-    # Get top N peaks by total jobs
+    # Get top N peaks by total jobs from ENTIRE YTD period
     try:
         peaks = ytd_df.nlargest(top_n, 'TOTAL_JOBS')
     except Exception:
         peaks = ytd_df.sort_values('TOTAL_JOBS', ascending=False).head(top_n)
     
-    return peaks[['DATE', 'TOTAL_JOBS']].sort_values('DATE')
+    result = peaks[['DATE', 'TOTAL_JOBS']].sort_values('DATE')
+    
+    # Log the peaks found
+    if not result.empty:
+        logging.info(f"Top {top_n} YTD peaks found:")
+        for _, row in result.iterrows():
+            logging.info(f"  {row['DATE'].strftime('%Y-%m-%d')}: {int(row['TOTAL_JOBS']):,} jobs")
+    
+    return result
 
 # =============================================================
 # Chart Builders
@@ -370,7 +388,7 @@ def peaks_detail_table(peaks_df: pd.DataFrame,
 def generate_jobs_data_table(df: pd.DataFrame, baseline: int, is_daily: bool = False) -> str:
     """
     Generate the Jobs Data table showing ONLY TOP 4 PEAKS with Date, Baseline, Total Jobs, and Variation.
-    Excludes today's data.
+    For daily mode, shows YTD peaks. Excludes today's data.
     """
     # Filter out today's data first
     today = datetime.now().date()
@@ -384,9 +402,13 @@ def generate_jobs_data_table(df: pd.DataFrame, baseline: int, is_daily: bool = F
     
     # Get top 4 peaks based on mode
     if is_daily:
+        # For daily mode, use YTD data for peaks
+        logging.info("Generating Jobs Data table for DAILY mode - using YTD peaks")
         top_4_peaks = compute_top_peaks_ytd(daily, 4)
         title = "Jobs Data - Top 4 Peaks (YTD)"
     else:
+        # For monthly mode, use current month
+        logging.info("Generating Jobs Data table for MONTHLY mode - using current month peaks")
         top_4_peaks, _, _ = compute_top_peaks(daily, 4, None, None)
         title = "Jobs Data - Top 4 Peaks"
     
@@ -439,20 +461,31 @@ def generate_global_peaks_section(df: pd.DataFrame,
                                   baseline: int,
                                   top_n: int = 4,
                                   is_daily: bool = False) -> str:
+    """
+    Generate the peak comparison chart.
+    For daily mode: shows YTD peaks
+    For monthly mode: shows current month peaks
+    """
     # Filter out today's data first
     today = datetime.now().date()
     df_filtered = df[df['DATE'].dt.date < today].copy()
     
     daily = df_filtered.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
     
+    if daily.empty:
+        return "<p>No data available for peaks chart.</p>"
+    
     if is_daily:
+        logging.info("Generating peaks chart for DAILY mode - using YTD data")
         peaks = compute_top_peaks_ytd(daily, top_n)
-        chart_title = "Top 4 Peaks of YTD"  # Changed title
+        chart_title = "Top 4 Peaks of YTD"
     else:
+        logging.info("Generating peaks chart for MONTHLY mode - using current month")
         peaks, y, m = compute_top_peaks(daily, top_n, None, None)
         if peaks.empty:
             return "<p>No peak data for current month.</p>"
-        month_label = peaks['DATE'].dt.strftime('%b').iloc[0]
+        # Get the month from the actual data
+        month_label = peaks['DATE'].dt.strftime('%b').iloc[0] if not peaks.empty else "Current Month"
         chart_title = f"Top {len(peaks)} Peaks of {month_label}"
     
     if peaks.empty:
@@ -522,7 +555,7 @@ def generate_monthly_usage_chart(df: pd.DataFrame, baseline: int) -> str:
 
 def generate_monthly_country_breakdown_chart(df: pd.DataFrame) -> str:
     """
-    Generate monthly stacked bar chart broken down by country (like your screenshot)
+    Generate monthly stacked bar chart broken down by country.
     Excludes today's data.
     """
     # Filter out today's data
@@ -897,9 +930,13 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         is_daily = not monthly
         baseline = config.get('BASELINE', 1899206)
 
-        logging.info(f"Running in {'DAILY' if is_daily else 'MONTHLY'} mode")
+        logging.info("="*60)
+        logging.info(f"Publishing to Confluence")
+        logging.info(f"Mode: {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
         logging.info(f"Page title: {config['PAGE_TITLE']}")
-        logging.info(f"Excluding today's data: {datetime.now().date()}")
+        logging.info(f"Baseline: {baseline:,}")
+        logging.info(f"Today's date (excluded): {datetime.now().date()}")
+        logging.info("="*60)
 
         # Load and sanitize data
         df, ok = load_csv_data(report_file)
@@ -921,17 +958,17 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
                 logging.error("Connection test failed.")
                 return False
 
-        # Generate content sections (all will exclude today's data now)
+        # Generate content sections (all will exclude today's data and use proper YTD for daily)
         peaks_section = generate_global_peaks_section(df, baseline, is_daily=is_daily)
         jobs_data_table = generate_jobs_data_table(df, baseline, is_daily=is_daily)
         monthly_usage_chart = generate_monthly_usage_chart(df, baseline)
         
         # For daily mode, show monthly country breakdown chart and table
         if is_daily:
-            logging.info("Generating daily mode charts with country breakdown")
+            logging.info("Generating daily mode charts with YTD peaks and country breakdown")
             monthly_country_chart = generate_monthly_country_breakdown_chart(df)
         else:
-            logging.info("Generating monthly mode charts")
+            logging.info("Generating monthly mode charts with current month peaks")
             monthly_country_chart = ""
             
         # Simple daily chart only for monthly mode
@@ -948,12 +985,14 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         yesterday = (datetime.now().date() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
         
         title_suffix = " - YTD" if is_daily else ""
+        date_range_desc = "YTD (Year-to-Date)" if is_daily else "Current Month"
         
         content = f"""
 <h1>Task Usage Report{title_suffix}{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
 <p><strong>Generated by:</strong> {user}</p>
 <p><strong>Data through:</strong> {yesterday} (excludes today)</p>
+<p><strong>Report Mode:</strong> {date_range_desc}</p>
 <h2>Overall Monthly Task Usage Report</h2>
 {jobs_data_table}
 {peaks_section}
@@ -962,7 +1001,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
 {daily_chart}
 {country_chart}
 <hr />
-<p><em>Note: This report shows the task usage data through {yesterday}{' (TEST MODE)' if test_mode else ''}.</em></p>
+<p><em>Note: This report shows the task usage data through {yesterday} in {date_range_desc} mode{' (TEST MODE)' if test_mode else ''}.</em></p>
 """
 
         # Skip actual upload if requested
@@ -1009,6 +1048,12 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
         is_daily = not monthly
         baseline = config.get('BASELINE', 1899206)
 
+        logging.info("="*60)
+        logging.info(f"Publishing Multi-Country Report to Confluence")
+        logging.info(f"Mode: {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
+        logging.info(f"Page title: {config['PAGE_TITLE']}")
+        logging.info("="*60)
+
         # Process all country files
         frames = []
         for ctry, path in report_files:
@@ -1038,7 +1083,7 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
                 logging.error("Connection test failed.")
                 return False
 
-        # Generate content (all will exclude today's data)
+        # Generate content (all will exclude today's data and use YTD for daily)
         global_peaks = generate_global_peaks_section(all_df, baseline, is_daily=is_daily)
         jobs_data_table = generate_jobs_data_table(all_df, baseline, is_daily=is_daily)
         monthly_usage_chart = generate_monthly_usage_chart(all_df, baseline)
@@ -1061,12 +1106,14 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
         yesterday = (datetime.now().date() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
         
         title_suffix = " - YTD" if is_daily else ""
+        date_range_desc = "YTD (Year-to-Date)" if is_daily else "Current Month"
         
         content = f"""
 <h1>Multi-Country Task Usage Report{title_suffix}{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
 <p><strong>Generated by:</strong> {user}</p>
 <p><strong>Data through:</strong> {yesterday} (excludes today)</p>
+<p><strong>Report Mode:</strong> {date_range_desc}</p>
 <h2>Overall Monthly Task Usage Report</h2>
 {jobs_data_table}
 {global_peaks}
@@ -1075,7 +1122,7 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
 {global_daily}
 {country_chart}
 <hr />
-<p><em>Note: This report shows aggregated data from multiple countries through {yesterday}{' (TEST MODE)' if test_mode else ''}.</em></p>
+<p><em>Note: This report shows aggregated data from multiple countries through {yesterday} in {date_range_desc} mode{' (TEST MODE)' if test_mode else ''}.</em></p>
 """
 
         if skip_actual_upload:
