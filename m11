@@ -413,9 +413,7 @@ def process_csv_file_countries(output_dir, target_month, test_mode=False, is_dai
                 'success': False,
                 'source': 'csv_file'
             })
-    
-    return results
-
+    # (Continuing from line 600 of main.py...)
 
 def process_single_csv_country_file(source_file, output_file, country_name, target_month, is_daily_mode=False):
     """
@@ -654,7 +652,7 @@ def run_workflow_multi_enhanced(countries, default_output_csv, execution_timesta
                                test_mode=False, publish_test=True, target_month=None, is_daily_mode=False):
     """
     Enhanced multi-country workflow that handles both database countries and CSV file countries.
-    FIXED: Pass daily mode flag to CSV processing
+    FIXED: Pass daily mode flag to CSV processing and publishing
     
     Args:
         countries: List of database countries from countries.json
@@ -764,13 +762,14 @@ def run_workflow_multi_enhanced(countries, default_output_csv, execution_timesta
         
         os.chdir(original_cwd)
         
-        # Step 6: Publish to Confluence
+        # Step 6: Publish to Confluence with explicit mode
         if publish_test:
-            logging.info("Publishing aggregated report to Confluence...")
+            logging.info(f"Publishing aggregated report to Confluence in {'YTD' if is_daily_mode else 'Monthly'} mode...")
             publish_success = publish_to_confluence(
                 report_file=aggregated_report,
                 test_mode=test_mode,
-                skip_actual_upload=False
+                skip_actual_upload=False,
+                is_daily_mode=is_daily_mode  # Pass the mode explicitly!
             )
             if not publish_success:
                 logging.error("Failed to publish to Confluence")
@@ -1218,4 +1217,5 @@ def main():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main())    return results
+
