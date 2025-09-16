@@ -1,1187 +1,1198 @@
-#!/usr/bin/env python3
-"""
-Main workflow launcher - Enhanced with CSV auto-discovery.
-
-Key features:
-- Single or multi-country execution
-- Date range modes: --monthly (previous month), --daily (YTD)
-- Page title updates now target config.json (single source of truth)
-- Query date range updates preserve the original query formatting (no column tampering)
-- Test mode (--test) uses a predefined test CSV (handled inside workflow)
-- --no-publish skips Confluence upload
-- Multi-country support with simple date-based folder organization
-- AUTO-DISCOVERY: Automatically detects CSV countries from files matching pattern
-"""
-
-import os
-import sys
+import requests
+from requests.auth import HTTPBasicAuth
+import pandas as pd
 import json
+import urllib3
+import os
+from datetime import datetime
 import logging
 import re
-import calendar
-from datetime import datetime, timedelta
-import argparse
-import tempfile
-import shutil
-import glob
-import pandas as pd
+from typing import Tuple, Optional, Dict, List
 
-# Make project root importable
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(PROJECT_ROOT)
+# -------------------------------------------------------------
+# Confluence Publisher - Fixed YTD Peak Calculation for Daily Mode
+# -------------------------------------------------------------
 
-from src.workflow import run_workflow  # noqa: E402
-from lib.secure_config import SecureConfig  # noqa: E402
-from lib.csv_processor import CSVProcessor  # noqa: E402
-from lib.confluence_publisher import publish_to_confluence  # noqa: E402
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ---------------------------------------------------------------------------
-# Constants / Configuration Paths
-# ---------------------------------------------------------------------------
+MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+)
 
-# Database / single-country INI (used ONLY for DB connection parameters)
-CONFIG_FILE = 'config/config.ini'
+# =============================================================
+# Configuration / Auth
+# =============================================================
 
-# Authoritative Confluence configuration (page title lives here)
-TITLE_CONFIG_FILE = 'config/config.json'
-
-# Base SQL and default output
-QUERY_FILE = 'config/query.sql'
-OUTPUT_CSV = 'data.csv'
-
-# Current execution metadata - UPDATED TO CURRENT TIME
-EXECUTION_TIMESTAMP = datetime.strptime('2025-09-09 08:17:18', '%Y-%m-%d %H:%M:%S')
-EXECUTION_USER = 'satish537'
-
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-
-def setup_logging():
-    log_file = f"workflow_{EXECUTION_TIMESTAMP.strftime('%Y%m%d_%H%M%S')}.log"
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
-    )
-
-
-# ---------------------------------------------------------------------------
-# Credential Checks
-# ---------------------------------------------------------------------------
-
-def check_password_available():
+def _is_monthly_run(config: Dict) -> bool:
     """
-    Returns True if we can authenticate to Confluence (env password or encrypted JSON),
-    otherwise False.
+    Determine if this is a monthly or daily (YTD) run based on page title.
+    FIXED: Check for YTD mode FIRST before defaulting to monthly
+    - YTD mode: title ends with " - YTD"
+    - Monthly mode: title ends with " - <MonthName>"
     """
-    if os.environ.get('CONFLUENCE_PASSWORD'):
+    title = config.get('PAGE_TITLE', '')
+    
+    # Check for YTD mode FIRST (this was missing!)
+    if title.endswith(' - YTD'):
+        logging.info(f"Detected YTD mode from title: {title}")
+        return False  # This is daily/YTD mode
+    
+    # Legacy check for _daily suffix
+    if title.endswith('_daily'):
+        logging.info(f"Detected daily mode from legacy _daily suffix: {title}")
+        return False
+    
+    # Check for month names
+    if re.search(r'\s-\s(' + '|'.join(MONTH_NAMES) + r')$', title):
+        logging.info(f"Detected monthly mode from month name: {title}")
         return True
     
-    # Check multiple possible locations for config.json
-    config_paths = [
-        "config/config.json",  # Most likely location based on your structure
-        "config.json",         # Root directory fallback
-        "config/config_test.json"  # Test config alternative
-    ]
+    # Default to monthly if no clear indicator
+    logging.info(f"Defaulting to monthly mode for title: {title}")
+    return True
+
+def find_config_file(test_mode: bool = False) -> Optional[str]:
+    """
+    Find the config file in various possible locations.
+    Returns the path to the first existing config file found.
+    """
+    # Define search paths based on mode
+    if test_mode:
+        search_paths = [
+            "config/config_test.json",
+            "config_test.json",
+            "config/config.json",
+            "config.json"
+        ]
+    else:
+        search_paths = [
+            "config/config.json",
+            "config.json",
+            "config/config_test.json",
+            "config_test.json"
+        ]
     
-    for config_path in config_paths:
-        abs_path = os.path.abspath(config_path)
+    # Check each path
+    for path in search_paths:
+        abs_path = os.path.abspath(path)
         if os.path.exists(abs_path):
-            try:
-                with open(abs_path, 'r', encoding='utf-8') as f:
-                    cfg = json.load(f)
-                if 'PASSWORD_ENCRYPTED' in cfg and os.path.exists(SecureConfig.KEY_FILE):
-                    return True
-            except Exception:
-                continue
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Date Range Helpers
-# ---------------------------------------------------------------------------
-
-def get_previous_month_date_range():
-    """
-    Return: (start_str, end_str, month_name) for previous calendar month.
-    """
-    today = datetime.now()
-    first_day_current = datetime(today.year, today.month, 1)
-    last_day_prev = first_day_current - timedelta(days=1)
-    first_day_prev = datetime(last_day_prev.year, last_day_prev.month, 1)
-    start_date_str = first_day_prev.strftime('%Y-%m-%d 00:00:00')
-    end_date_str = last_day_prev.strftime('%Y-%m-%d 23:59:59')
-    month_name = calendar.month_name[last_day_prev.month]
-    logging.info(f"Previous month date range: {start_date_str} to {end_date_str} ({month_name})")
-    return start_date_str, end_date_str, month_name
-
-
-def get_ytd_date_range():
-    """
-    Year-to-date (Jan 1 .. today 23:59:59).
-    """
-    today = datetime.now()
-    start_of_year = datetime(today.year, 1, 1)
-    start_date_str = start_of_year.strftime('%Y-%m-%d 00:00:00')
-    end_date_str = today.strftime('%Y-%m-%d 23:59:59')
-    logging.info(f"YTD date range: {start_date_str} to {end_date_str}")
-    return start_date_str, end_date_str
-
-
-# ---------------------------------------------------------------------------
-# Query Date Range Updater (Preserve Original Formatting)
-# ---------------------------------------------------------------------------
-
-def update_query_dates_preserve(query_path, start_date, end_date):
-    """
-    Preserve the original query.sql text; only update the BETWEEN date range.
-
-    We look for the first occurrence of:
-      BETWEEN TO_DATE('....', 'YYYY-MM-DD HH24:MI:SS') and TO_DATE('....', 'YYYY-MM-DD HH24:MI:SS')
-
-    Replace only the two datetime literals. If pattern not found, log and return False.
-    """
-    import re as _re
-    try:
-        if not os.path.exists(query_path):
-            logging.error("Query file not found: %s", query_path)
-            return False
-
-        with open(query_path, 'r', encoding='utf-8') as f:
-            original = f.read()
-
-        pattern = _re.compile(
-            r"(BETWEEN\s+TO_DATE\(')"
-            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
-            r"('\s*,\s*'YYYY-MM-DD HH24:MI:SS'\)\s+and\s+TO_DATE\(')"
-            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
-            r"('\s*,\s*'YYYY-MM-DD HH24:MI:SS'\))",
-            _re.IGNORECASE | _re.MULTILINE
-        )
-
-        def repl(m):
-            return f"{m.group(1)}{start_date}{m.group(2)}{end_date}{m.group(3)}"
-
-        new_query, count = pattern.subn(repl, original, count=1)
-        if count == 0:
-            logging.error("Could not locate BETWEEN date range to replace in %s", query_path)
-            # Optional trace comment
-            with open(query_path, 'a', encoding='utf-8') as f:
-                f.write(f"\n-- WARNING: Date range replacement failed at {datetime.now()}\n")
-            return False
-
-        backup_path = f"{query_path}.bak"
-        if not os.path.exists(backup_path):
-            with open(backup_path, 'w', encoding='utf-8') as f:
-                f.write(original)
-            logging.info("Created backup at %s", backup_path)
-
-        with open(query_path, 'w', encoding='utf-8') as f:
-            f.write(new_query)
-
-        logging.info(
-            "Updated date range in %s to %s -> %s (preserved original formatting)",
-            query_path, start_date, end_date
-        )
-        return True
-    except Exception as e:
-        logging.error("Error preserving query dates: %s", e)
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Page Title Updater (JSON Single Source) - UPDATED FOR YTD vs MONTH NAME
-# ---------------------------------------------------------------------------
-
-def update_confluence_page_title(config_path, suffix, is_daily=False):
-    """
-    Update PAGE_TITLE in JSON.
+            logging.info(f"Found config file at: {abs_path}")
+            return abs_path
     
-    For daily mode: append " - YTD" 
-    For monthly mode: append " - <MonthName>" (e.g., " - August")
+    # Log all attempted paths if none found
+    logging.error(f"Config file not found. Searched in: {search_paths}")
+    return None
+
+def load_config(config_path: str = None) -> Optional[Dict]:
+    """
+    Load configuration from the specified or auto-detected path.
     """
     try:
-        # Use absolute path to ensure we can find the config file
-        abs_config_path = os.path.abspath(config_path)
-        if not os.path.exists(abs_config_path):
-            logging.error(f"Config file not found: {abs_config_path}")
-            return False
-
-        # JSON path (primary)
-        if abs_config_path.endswith('.json'):
-            try:
-                with open(abs_config_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except Exception as e:
-                logging.error(f"Failed reading JSON config {abs_config_path}: {e}")
-                return False
-
-            if 'PAGE_TITLE' not in data:
-                logging.error(f"PAGE_TITLE key not found in JSON {abs_config_path}")
-                return False
-
-            # Get base title by removing existing suffixes
-            base = data['PAGE_TITLE']
-            
-            # Remove any existing suffixes (YTD, month names, _daily)
-            base = re.sub(r'_daily$', '', base)
-            base = re.sub(r'\s+-\s+YTD$', '', base)
-            base = re.sub(
-                r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December)$',
-                '', base
-            )
-            
-            # Apply new suffix based on mode
-            if is_daily:
-                new_title = f"{base} - YTD"
-            else:
-                # For monthly mode, append the month name (suffix parameter contains month name)
-                new_title = f"{base} - {suffix}"
-
-            data['PAGE_TITLE'] = new_title
-            
-            try:
-                with open(abs_config_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=4)
-            except Exception as e:
-                logging.error(f"Failed writing JSON config {abs_config_path}: {e}")
-                return False
-
-            logging.info(f"Successfully updated Confluence PAGE_TITLE to: {new_title}")
-            return True
-
-        logging.error(f"Config file is not JSON format: {abs_config_path}")
-        return False
-
-    except Exception as e:
-        logging.error(f"Error updating Confluence page title: {str(e)}")
-        return False
-
-
-# ---------------------------------------------------------------------------
-# CSV File Analysis Helper
-# ---------------------------------------------------------------------------
-
-def analyze_csv_file(csv_path):
-    """
-    Analyze a CSV file and return information about its content.
-    """
-    try:
-        if not os.path.exists(csv_path):
-            return f"File does not exist: {csv_path}"
+        # If no path specified, try to find it
+        if not config_path:
+            config_path = find_config_file()
+            if not config_path:
+                logging.error("Could not find config file in any expected location")
+                return None
         
-        file_size = os.path.getsize(csv_path)
-        
-        with open(csv_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        
-        line_count = len(lines)
-        data_rows = line_count - 1 if line_count > 0 else 0  # Subtract header row
-        
-        header = lines[0].strip() if lines else "No content"
-        sample_data = lines[1].strip() if len(lines) > 1 else "No data rows"
-        
-        return f"Size: {file_size} bytes, Lines: {line_count}, Data rows: {data_rows}, Header: {header}, Sample: {sample_data}"
-    except Exception as e:
-        return f"Error analyzing {csv_path}: {e}"
-
-
-# ---------------------------------------------------------------------------
-# FIXED: CSV Auto-Discovery Functions (NO REGEX)
-# ---------------------------------------------------------------------------
-
-def auto_discover_csv_countries(csv_path, target_month):
-    """
-    Auto-discover CSV countries by scanning for: Countrycode_USAGEREPORT_YYYYMM.csv
-    """
-    if not os.path.exists(csv_path):
-        logging.warning(f"CSV countries path does not exist: {csv_path}")
-        return []
-    
-    # Simple pattern: MX_USAGEREPORT_202508.csv
-    pattern = f"*_USAGEREPORT_{target_month}.csv"
-    search_pattern = os.path.join(csv_path, pattern)
-    logging.info(f"Scanning for CSV files: {search_pattern}")
-    
-    discovered_countries = []
-    matching_files = glob.glob(search_pattern)
-    
-    for file_path in matching_files:
-        filename = os.path.basename(file_path)
-        if '_USAGEREPORT_' in filename:
-            country_code = filename.split('_USAGEREPORT_')[0]
-            if country_code and len(country_code) >= 2:
-                discovered_countries.append({
-                    'name': country_code,
-                    'country_code': country_code,
-                    'file_path': file_path,
-                    'filename': filename
-                })
-                logging.info(f"Discovered CSV country: {country_code} -> {filename}")
-    
-    logging.info(f"Auto-discovered {len(discovered_countries)} CSV countries for {target_month}")
-    return discovered_countries
-
-
-def process_csv_file_countries(output_dir, target_month, test_mode=False):
-    """
-    Process countries that provide CSV files directly using auto-discovery.
-    """
-    # Load config to get CSV path
-    try:
-        with open('config/config.json', 'r') as f:
+        with open(config_path, 'r') as f:
             config = json.load(f)
+        
+        required = ['CONFLUENCE_URL', 'USERNAME', 'SPACE_KEY', 'PAGE_TITLE']
+        if not all(k in config for k in required):
+            logging.error(f"Missing required configuration keys. Need: {required}")
+            return None
+        
+        if 'BASELINE' not in config:
+            config['BASELINE'] = 1899206
+        
+        logging.info(f"Successfully loaded config from {config_path}")
+        return config
     except Exception as e:
-        logging.warning(f"Could not load config for CSV countries: {e}")
-        return []
-    
-    csv_path = config.get('CSV_COUNTRIES_PATH')
-    if not csv_path:
-        logging.info("No CSV_COUNTRIES_PATH configured, skipping CSV file countries")
-        return []
-    
-    # Auto-discover CSV countries
-    csv_countries = auto_discover_csv_countries(csv_path, target_month)
-    
-    if not csv_countries:
-        logging.info(f"No CSV countries found for month {target_month}")
-        return []
-    
-    logging.info(f"Processing {len(csv_countries)} auto-discovered CSV countries")
-    
-    results = []
-    
-    for csv_country in csv_countries:
-        country_name = csv_country['name']
-        country_code = csv_country['country_code']
-        source_file_path = csv_country['file_path']
-        
-        # Output file in our processing directory
-        output_file = os.path.join(output_dir, f"data_{country_name.lower()}.csv")
-        
-        logging.info(f"Processing CSV country: {country_name} from {source_file_path}")
-        
-        if test_mode:
-            # Create dummy test data for CSV countries
-            create_test_csv_country_data(output_file, country_name, target_month)
-            results.append({
-                'name': country_name,
-                'csv_file': output_file,
-                'success': True,
-                'source': 'csv_file'
-            })
-            logging.info(f"Created test data for CSV country: {country_name}")
-            continue
-        
+        logging.error(f"Error loading config from {config_path}: {e}")
+        return None
+
+def get_password_from_config(config: Dict) -> Optional[str]:
+    """
+    Get password from config - either encrypted or base64 encoded.
+    """
+    # Try encrypted password first
+    if 'PASSWORD_ENCRYPTED' in config:
         try:
-            # Process the actual CSV file
-            success = process_single_csv_country_file(
-                source_file_path, output_file, country_name, target_month
-            )
-            
-            results.append({
-                'name': country_name,
-                'csv_file': output_file,
-                'success': success,
-                'source': 'csv_file'
-            })
-            
-            if success:
-                logging.info(f"Successfully processed CSV country: {country_name}")
-            else:
-                logging.error(f"Failed to process CSV country: {country_name}")
-                
+            from lib.secure_config import SecureConfig
+            password = SecureConfig.decrypt_password(config['PASSWORD_ENCRYPTED'])
+            if password:
+                return password
         except Exception as e:
-            logging.error(f"Error processing CSV country {country_name}: {e}")
-            results.append({
-                'name': country_name,
-                'csv_file': output_file,
-                'success': False,
-                'source': 'csv_file'
-            })
+            logging.warning(f"Could not decrypt password: {e}")
     
-    return results
-
-
-def process_single_csv_country_file(source_file, output_file, country_name, target_month):
-    """
-    Process a single CSV file from a country and convert it to our standard format.
-    FIXED: Properly aggregate daily totals from multiple CTM_HOST entries
-    
-    Expected input format: NET_DATE, CTM_HOST_NAME, FVALUE, JOBS (like your Excel screenshot)
-    Output format: NET_DATE, TOTAL_JOBS (aggregated by date)
-    """
-    try:
-        # Read the source CSV
-        df = pd.read_csv(source_file)
-        
-        logging.info(f"Loaded CSV for {country_name}: {len(df)} rows")
-        logging.info(f"Columns: {list(df.columns)}")
-        
-        # Log first few rows to understand the data
-        logging.info(f"First 5 rows of raw data:")
-        for i in range(min(5, len(df))):
-            logging.info(f"  Row {i}: {df.iloc[i].to_dict()}")
-        
-        # Handle different possible column names for jobs
-        jobs_column = None
-        for col in ['JOBS', 'JOBS_PER_DAY', 'TOTAL_JOBS', 'JOB_COUNT', 'FVALUE']:
-            if col in df.columns:
-                jobs_column = col
-                break
-        
-        if jobs_column is None:
-            # If no jobs column found, assume the last numeric column
-            numeric_cols = df.select_dtypes(include=['number']).columns
-            if len(numeric_cols) > 0:
-                jobs_column = numeric_cols[-1]
-                logging.warning(f"No standard jobs column found, using: {jobs_column}")
-            else:
-                logging.error(f"No numeric column found for jobs in {country_name}")
-                return False
-        
-        logging.info(f"Using jobs column: {jobs_column}")
-        
-        # Handle date column
-        date_column = None
-        for col in ['NET_DATE', 'DATE', 'DAY', 'REPORT_DATE']:
-            if col in df.columns:
-                date_column = col
-                break
-        
-        if date_column is None:
-            logging.error(f"No date column found in {country_name}")
-            return False
-        
-        logging.info(f"Using date column: {date_column}")
-        
-        # Convert date column to datetime - handle various date formats
-        # Try multiple date formats since Excel might export dates differently
-        date_formats = [
-            '%d/%m/%Y %H:%M',     # 01/08/2025 08:00
-            '%d/%m/%Y %H:%M:%S',  # 01/08/2025 08:00:00
-            '%Y-%m-%d %H:%M:%S',  # 2025-08-01 08:00:00
-            '%Y-%m-%d',           # 2025-08-01
-            '%m/%d/%Y %H:%M',     # 08/01/2025 08:00 (US format)
-            '%m/%d/%Y %H:%M:%S',  # 08/01/2025 08:00:00 (US format)
-        ]
-        
-        # Try to parse dates with different formats
-        date_parsed = False
-        for date_format in date_formats:
-            try:
-                df[date_column] = pd.to_datetime(df[date_column], format=date_format)
-                date_parsed = True
-                logging.info(f"Successfully parsed dates using format: {date_format}")
-                break
-            except:
-                continue
-        
-        # If no format worked, try pandas auto-detection
-        if not date_parsed:
-            try:
-                df[date_column] = pd.to_datetime(df[date_column], dayfirst=True)  # European format preference
-                date_parsed = True
-                logging.info("Successfully parsed dates using pandas auto-detection with dayfirst=True")
-            except:
-                try:
-                    df[date_column] = pd.to_datetime(df[date_column])  # Let pandas figure it out
-                    date_parsed = True
-                    logging.info("Successfully parsed dates using pandas auto-detection")
-                except Exception as e:
-                    logging.error(f"Could not parse dates: {e}")
-                    return False
-        
-        # Remove any rows where date parsing failed
-        df = df[pd.notna(df[date_column])].copy()
-        logging.info(f"After date parsing, {len(df)} valid rows remain")
-        
-        if df.empty:
-            logging.error(f"No valid dates found after parsing in {country_name}")
-            return False
-        
-        # Extract just the date part for grouping
-        df['DATE_ONLY'] = df[date_column].dt.date
-        
-        # Log date range in the data
-        min_date = df[date_column].min()
-        max_date = df[date_column].max()
-        logging.info(f"Date range in file: {min_date} to {max_date}")
-        
-        # Filter to target month if specified
-        if target_month:
-            target_year = int(target_month[:4])
-            target_month_num = int(target_month[4:6])
-            
-            df_filtered = df[
-                (df[date_column].dt.year == target_year) & 
-                (df[date_column].dt.month == target_month_num)
-            ].copy()
-            
-            if df_filtered.empty:
-                logging.warning(f"No data found for target month {target_month} in {country_name}")
-                # Use all data if no target month data
-                df_filtered = df.copy()
-            else:
-                logging.info(f"Filtered to {len(df_filtered)} rows for month {target_month}")
-        else:
-            df_filtered = df.copy()
-        
-        # Convert jobs column to numeric, handling any formatting issues
-        df_filtered[jobs_column] = pd.to_numeric(
-            df_filtered[jobs_column].astype(str).str.replace(',', '').str.strip(), 
-            errors='coerce'
-        )
-        
-        # Remove rows with invalid job counts
-        df_filtered = df_filtered[pd.notna(df_filtered[jobs_column])].copy()
-        
-        if df_filtered.empty:
-            logging.error(f"No valid job counts found in {country_name}")
-            return False
-        
-        # Group by date only (not datetime) and sum jobs - THIS IS THE KEY FIX
-        daily_totals = df_filtered.groupby('DATE_ONLY')[jobs_column].sum().reset_index()
-        daily_totals.columns = ['DATE_ONLY', 'TOTAL_JOBS']
-        
-        # Format date as datetime string for output (matching database format)
-        daily_totals['NET_DATE'] = pd.to_datetime(daily_totals['DATE_ONLY']).dt.strftime('%Y-%m-%d %H:%M:%S')
-        
-        # Select only the columns we need
-        daily_totals = daily_totals[['NET_DATE', 'TOTAL_JOBS']]
-        
-        # Sort by date
-        daily_totals = daily_totals.sort_values('NET_DATE')
-        
-        # Log summary of what we're writing
-        logging.info(f"Processed {country_name}: {len(daily_totals)} daily records")
-        logging.info(f"Date range: {daily_totals['NET_DATE'].min()} to {daily_totals['NET_DATE'].max()}")
-        logging.info(f"Total jobs: {daily_totals['TOTAL_JOBS'].sum():,}")
-        
-        # Log first few rows of output
-        logging.info("First 5 rows of output:")
-        for i in range(min(5, len(daily_totals))):
-            row = daily_totals.iloc[i]
-            logging.info(f"  {row['NET_DATE']}: {row['TOTAL_JOBS']:,.0f} jobs")
-        
-        # Save to output file
-        daily_totals.to_csv(output_file, index=False)
-        
-        logging.info(f"Successfully wrote {len(daily_totals)} daily aggregated records to {output_file}")
-        
-        return True
-        
-    except Exception as e:
-        logging.error(f"Error processing CSV file for {country_name}: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-        return False
-
-
-def create_test_csv_country_data(output_file, country_name, target_month):
-    """
-    Create test data for CSV countries in test mode.
-    """
-    from datetime import datetime, timedelta
-    
-    # Parse target month
-    target_year = int(target_month[:4])
-    target_month_num = int(target_month[4:6])
-    
-    # Generate test data for the month
-    start_date = datetime(target_year, target_month_num, 1)
-    
-    # Generate daily data for the month
-    dates = []
-    jobs = []
-    
-    for day in range(1, 32):  # Up to 31 days
+    # Try base64 encoded password
+    if 'PASSWORD_B64' in config:
         try:
-            date = datetime(target_year, target_month_num, day)
-            dates.append(date.strftime('%Y-%m-%d %H:%M:%S'))
-            # Vary jobs by country
-            base_jobs = {'MX': 3000, 'BR': 2500, 'CA': 1800}.get(country_name, 2000)
-            daily_jobs = base_jobs + (day * 50) + (hash(country_name) % 500)
-            jobs.append(daily_jobs)
-        except ValueError:
-            # Invalid date (e.g., Feb 31)
-            break
+            import base64
+            password = base64.b64decode(config['PASSWORD_B64']).decode('utf-8')
+            if password:
+                return password
+        except Exception as e:
+            logging.warning(f"Could not decode base64 password: {e}")
     
-    # Create DataFrame
-    test_df = pd.DataFrame({
-        'NET_DATE': dates,
-        'TOTAL_JOBS': jobs
+    # Try plain password (not recommended)
+    if 'PASSWORD' in config:
+        return config['PASSWORD']
+    
+    return None
+
+def create_session(config: Dict) -> Optional[requests.Session]:
+    """
+    Create authenticated session for Confluence API.
+    """
+    session = requests.Session()
+    auth_type = config.get('AUTH_TYPE', 'basic').lower()
+    
+    if auth_type == 'basic':
+        # Try various password sources
+        password = (os.environ.get('CONFLUENCE_PASSWORD') or
+                    get_password_from_config(config) or
+                    config.get('API_TOKEN'))
+        
+        if not password:
+            logging.error("Missing credentials for basic auth.")
+            return None
+        
+        session.auth = HTTPBasicAuth(config['USERNAME'], password)
+        
+    elif auth_type == 'jwt':
+        token = os.environ.get('CONFLUENCE_TOKEN') or config.get('API_TOKEN')
+        if not token:
+            logging.error("Missing JWT token.")
+            return None
+        session.headers.update({"Authorization": f"Bearer {token}"})
+        
+    elif auth_type == 'cookie':
+        cookie = os.environ.get('CONFLUENCE_COOKIE') or config.get('SESSION_COOKIE')
+        if not cookie:
+            logging.error("Missing cookie value for cookie auth.")
+            return None
+        session.headers.update({"Cookie": cookie})
+    else:
+        logging.error(f"Unsupported AUTH_TYPE {auth_type}")
+        return None
+
+    session.headers.update({
+        "Content-Type": "application/json",
+        "X-Atlassian-Token": "no-check"
     })
     
-    # Save test data
-    test_df.to_csv(output_file, index=False)
-    logging.info(f"Created test data for {country_name}: {len(test_df)} records")
+    if 'PROXY' in config:
+        session.proxies = {"http": config['PROXY'], "https": config['PROXY']}
+    
+    session.verify = False
+    return session
 
+# =============================================================
+# Data Loading & Sanitization
+# =============================================================
 
-# ---------------------------------------------------------------------------
-# Enhanced Multi-Country Workflow Function
-# ---------------------------------------------------------------------------
-
-def run_workflow_multi_enhanced(countries, default_output_csv, execution_timestamp, execution_user, 
-                               test_mode=False, publish_test=True, target_month=None):
-    """
-    Enhanced multi-country workflow that handles both database countries and CSV file countries.
-    
-    Args:
-        countries: List of database countries from countries.json
-        target_month: String in format 'YYYYMM' (e.g., '202509' for September 2025)
-    """
-    # If no target month specified, use current month
-    if not target_month:
-        target_month = datetime.now().strftime('%Y%m')
-    
-    logging.info(f"="*60)
-    logging.info(f"Starting ENHANCED multi-country workflow for month: {target_month}")
-    logging.info(f"Database countries: {[c['name'] for c in countries]}")
-    logging.info(f"="*60)
-    
-    # Create date-based folder for organization
-    today_folder = datetime.now().strftime('%Y-%m-%d')
-    output_dir = os.path.join('reports', today_folder)
-    os.makedirs(output_dir, exist_ok=True)
-    
-    original_cwd = os.getcwd()
-    
+def load_csv_data(csv_file: str) -> Tuple[pd.DataFrame, bool]:
     try:
-        # Step 1: Process database countries (existing logic)
-        country_results = []
-        for country in countries:
-            country_name = country['name']
-            config_file = country['config_file']
-            query_file = country['query_file']
-            output_csv = os.path.join(output_dir, f"data_{country_name.lower()}.csv")
-            
-            logging.info(f"Processing database country: {country_name}")
-            
-            if test_mode:
-                # Create dummy test data for database countries
-                with open(output_csv, 'w') as f:
-                    f.write("NET_DATE,TOTAL_JOBS\n")
-                    for day in range(1, 31):
-                        date_str = f"2025-09-{day:02d} 00:00:00"
-                        jobs = 5000 + (day * 100)
-                        f.write(f"{date_str},{jobs}\n")
-                logging.info(f"Created test data for {country_name}")
-            else:
-                result = run_workflow(
-                    config_file, query_file, output_csv,
-                    execution_timestamp, execution_user,
-                    test_mode=test_mode, publish_test=False
-                )
-                
-                if result != 0:
-                    logging.error(f"Failed to process database country {country_name}")
-                    continue
-            
-            if os.path.exists(output_csv):
-                country_results.append({
-                    'name': country_name,
-                    'csv_file': output_csv,
-                    'success': True,
-                    'source': 'database'
-                })
-                logging.info(f"Successfully processed database country: {country_name}")
-        
-        # Step 2: Process CSV file countries
-        csv_countries_processed = process_csv_file_countries(
-            output_dir, target_month, test_mode
-        )
-        
-        # Add CSV countries to results
-        country_results.extend(csv_countries_processed)
-        
-        # Step 3: Verify we have data to process
-        successful_countries = [r for r in country_results if r['success']]
-        if not successful_countries:
-            logging.error("No countries processed successfully")
-            return False
-        
-        # Log summary of data sources
-        db_countries = [r for r in successful_countries if r['source'] == 'database']
-        csv_countries = [r for r in successful_countries if r['source'] == 'csv_file']
-        
-        logging.info(f"Data sources summary:")
-        logging.info(f"  Database countries: {len(db_countries)} - {[r['name'] for r in db_countries]}")
-        logging.info(f"  CSV file countries: {len(csv_countries)} - {[r['name'] for r in csv_countries]}")
-        
-        # Step 4: Change to output directory and aggregate all data
-        os.chdir(output_dir)
-        
-        csv_files = [f for f in os.listdir('.') if f.startswith('data_') and f.endswith('.csv')]
-        logging.info(f"CSV files found for aggregation: {csv_files}")
-        
-        # Use CSV processor to aggregate all country data
-        processor = CSVProcessor(execution_timestamp, execution_user)
-        success = processor.process_all_files()
-        
-        if not success:
-            logging.error("Failed to aggregate country data")
-            return False
-        
-        # Step 5: Copy aggregated reports back and publish
-        aggregated_report = "task_usage_report_by_region.csv"
-        main_aggregated_path = os.path.join(original_cwd, aggregated_report)
-        
-        if os.path.exists(aggregated_report):
-            shutil.copy2(aggregated_report, main_aggregated_path)
-            logging.info(f"Copied aggregated report to {main_aggregated_path}")
-        
-        os.chdir(original_cwd)
-        
-        # Step 6: Publish to Confluence
-        if publish_test:
-            logging.info("Publishing aggregated report to Confluence...")
-            publish_success = publish_to_confluence(
-                report_file=aggregated_report,
-                test_mode=test_mode,
-                skip_actual_upload=False
-            )
-            if not publish_success:
-                logging.error("Failed to publish to Confluence")
-                return False
-        
-        # Final summary
-        logging.info("="*60)
-        logging.info("ENHANCED MULTI-COUNTRY WORKFLOW SUMMARY")
-        logging.info("="*60)
-        logging.info(f"Target Month: {target_month}")
-        logging.info(f"Total Countries Processed: {len(successful_countries)}")
-        logging.info(f"Database Countries: {len(db_countries)}")
-        logging.info(f"CSV File Countries: {len(csv_countries)}")
-        
-        for result in successful_countries:
-            status = "✓ SUCCESS"
-            source_info = f"({result['source']})"
-            logging.info(f"  {result['name']}: {status} {source_info}")
-        
-        return True
-        
+        df = pd.read_csv(csv_file)
+        if 'DATE' in df.columns:
+            df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
+        return df, True
     except Exception as e:
-        logging.error(f"Error in enhanced multi-country workflow: {e}")
+        logging.error(f"Error loading CSV {csv_file}: {e}")
+        return pd.DataFrame(), False
+
+def sanitize_total_jobs(df: pd.DataFrame,
+                        preferred_col: Optional[str] = None) -> pd.DataFrame:
+    """
+    Ensure we have a numeric TOTAL_JOBS column.
+    """
+    candidate = None
+    if preferred_col and preferred_col in df.columns:
+        candidate = preferred_col
+    elif 'TOTAL_JOBS' in df.columns:
+        candidate = 'TOTAL_JOBS'
+    else:
+        # Try to guess a column with large ints
+        for c in df.columns:
+            if re.search(r'jobs|count|total', c.lower()):
+                candidate = c
+                break
+
+    if candidate is None:
+        logging.error("No suitable column found for TOTAL_JOBS.")
+        df['TOTAL_JOBS'] = pd.Series(dtype='float')
+        return df
+
+    # Create/overwrite TOTAL_JOBS from candidate
+    cleaned = (
+        df[candidate]
+        .astype(str)
+        .str.replace(',', '', regex=False)
+        .str.replace(' ', '', regex=False)
+        .str.strip()
+    )
+    df['TOTAL_JOBS'] = pd.to_numeric(cleaned, errors='coerce')
+
+    return df
+
+# =============================================================
+# Peak Calculation - FIXED FOR YTD IN DAILY MODE
+# =============================================================
+
+def latest_year_month(daily_df: pd.DataFrame) -> Tuple[int, int]:
+    latest = daily_df['DATE'].max()
+    return latest.year, latest.month
+
+def filter_to_month(daily_df: pd.DataFrame,
+                    year: Optional[int],
+                    month: Optional[int]) -> pd.DataFrame:
+    if year is None or month is None:
+        year, month = latest_year_month(daily_df)
+    result = daily_df[(daily_df.DATE.dt.year == year) & (daily_df.DATE.dt.month == month)].copy()
+    return result, year, month
+
+def compute_top_peaks(daily_df: pd.DataFrame,
+                      top_n: int,
+                      year: Optional[int],
+                      month: Optional[int]) -> Tuple[pd.DataFrame, int, int]:
+    """Compute top peaks for a specific month - excluding today if current month"""
+    today = datetime.now().date()
+    
+    # Filter out today's data
+    daily_df = daily_df[daily_df['DATE'].dt.date < today].copy()
+    
+    month_df, y, m = filter_to_month(daily_df, year, month)
+    if month_df.empty:
+        return month_df, y, m
+    try:
+        peaks = month_df.nlargest(top_n, 'TOTAL_JOBS')
+    except Exception:
+        peaks = month_df.sort_values('TOTAL_JOBS', ascending=False).head(top_n)
+    return peaks[['DATE', 'TOTAL_JOBS']], y, m
+
+def compute_top_peaks_ytd(daily_df: pd.DataFrame, top_n: int = 4) -> pd.DataFrame:
+    """
+    FIXED: Compute top N peaks for Year-To-Date (for daily reports) - excluding today
+    This function should NOT filter to any specific month, only to YTD
+    """
+    if daily_df.empty:
+        return daily_df
+    
+    # Get current date and year
+    today = datetime.now().date()
+    current_year = today.year
+    
+    # IMPORTANT: Do NOT filter to any specific month, only filter to current year
+    # and exclude today's data
+    ytd_df = daily_df[
+        (daily_df['DATE'].dt.year == current_year) & 
+        (daily_df['DATE'].dt.date < today)  # Exclude today
+    ].copy()
+    
+    if ytd_df.empty:
+        # Fallback to all data except today if no current year data
+        ytd_df = daily_df[daily_df['DATE'].dt.date < today].copy()
+    
+    # Log the actual date range being used
+    if not ytd_df.empty:
+        min_date = ytd_df['DATE'].min()
+        max_date = ytd_df['DATE'].max()
+        total_days = len(ytd_df['DATE'].unique())
+        logging.info(f"YTD Peak Calculation: Using data from {min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')} ({total_days} unique days)")
+        logging.info(f"YTD data contains {len(ytd_df)} total records from year {current_year}")
+    
+    # Get top N peaks by total jobs from ENTIRE YTD period
+    try:
+        peaks = ytd_df.nlargest(top_n, 'TOTAL_JOBS')
+    except Exception:
+        peaks = ytd_df.sort_values('TOTAL_JOBS', ascending=False).head(top_n)
+    
+    result = peaks[['DATE', 'TOTAL_JOBS']].sort_values('DATE')
+    
+    # Log the peaks found
+    if not result.empty:
+        logging.info(f"Top {top_n} YTD peaks found:")
+        for _, row in result.iterrows():
+            logging.info(f"  {row['DATE'].strftime('%Y-%m-%d')}: {int(row['TOTAL_JOBS']):,} jobs")
+    
+    return result
+
+# =============================================================
+# Chart Builders
+# =============================================================
+
+def peaks_transposed_chart(peaks_df: pd.DataFrame,
+                           baseline: int,
+                           chart_title: str) -> str:
+    """
+    Create chart with transposed data (dates as columns, series as rows)
+    Using specific color codes: red #B83939 for baseline, green #829A3D for total jobs
+    """
+    if peaks_df.empty:
+        return f"<p>No data for {chart_title}.</p>"
+    
+    # Sort by date
+    peaks_df = peaks_df.sort_values('DATE')
+    
+    # Format dates as MM-DD for cleaner display
+    date_format = peaks_df['DATE'].dt.strftime('%m-%d')
+    
+    # First row: Date headers
+    header_row = "<tr><th>Date</th>"
+    for date in date_format:
+        header_row += f"<th>{date}</th>"
+    header_row += "</tr>"
+    
+    # Second row: Baseline values
+    baseline_row = "<tr><td>Baseline</td>"
+    for _ in range(len(peaks_df)):
+        baseline_row += f"<td>{int(baseline)}</td>"
+    baseline_row += "</tr>"
+    
+    # Third row: Total Jobs values
+    jobs_row = "<tr><td>Total Jobs</td>"
+    for _, row in peaks_df.iterrows():
+        jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+    jobs_row += "</tr>"
+    
+    return f"""
+<ac:structured-macro ac:name="chart">
+  <ac:parameter ac:name="title">{chart_title}</ac:parameter>
+  <ac:parameter ac:name="type">bar</ac:parameter>
+  <ac:parameter ac:name="orientation">vertical</ac:parameter>
+  <ac:parameter ac:name="3D">true</ac:parameter>
+  <ac:parameter ac:name="width">600</ac:parameter>
+  <ac:parameter ac:name="height">400</ac:parameter>
+  <ac:parameter ac:name="legend">true</ac:parameter>
+  <ac:parameter ac:name="dataDisplay">true</ac:parameter>
+  <ac:parameter ac:name="stacked">false</ac:parameter>
+  <ac:parameter ac:name="showValues">true</ac:parameter>
+  <ac:parameter ac:name="colors">#B83939,#829A3D</ac:parameter>
+  <ac:rich-text-body>
+    <table>
+      <tbody>
+        {header_row}
+        {baseline_row}
+        {jobs_row}
+      </tbody>
+    </table>
+  </ac:rich-text-body>
+</ac:structured-macro>
+"""
+
+def peaks_detail_table(peaks_df: pd.DataFrame,
+                       baseline: int,
+                       label: str) -> str:
+    if peaks_df.empty:
+        return ""
+    ranked = peaks_df.sort_values('TOTAL_JOBS', ascending=False).reset_index(drop=True)
+    rank_map = {row.DATE: idx + 1 for idx, row in ranked.iterrows()}
+    display = peaks_df.sort_values('DATE').copy()
+    display['Variation'] = baseline - display['TOTAL_JOBS']
+    rows = ["<tr><th>Rank</th><th>Date</th><th>Total Jobs</th><th>Baseline</th><th>Variation</th></tr>"]
+    for _, r in display.iterrows():
+        variation = int(r['Variation'])
+        style = 'style="background-color:#90EE90;"' if variation > 0 else 'style="background-color:#FFB6C1;"'
+        rows.append(
+            f"<tr><td>{rank_map[r['DATE']]}</td>"
+            f"<td>{r['DATE'].strftime('%Y-%m-%d')}</td>"
+            f"<td>{int(r['TOTAL_JOBS'])}</td>"
+            f"<td>{baseline}</td>"
+            f"<td {style}>{variation}</td></tr>"
+        )
+    return f"<h4>Top 4 Peaks Detail ({label})</h4><table class='wrapped'><tbody>{''.join(rows)}</tbody></table>"
+
+def generate_jobs_data_table(df: pd.DataFrame, baseline: int, is_daily: bool = False) -> str:
+    """
+    Generate the Jobs Data table showing ONLY TOP 4 PEAKS with Date, Baseline, Total Jobs, and Variation.
+    For daily mode, shows YTD peaks. Excludes today's data.
+    """
+    # Filter out today's data first
+    today = datetime.now().date()
+    df_filtered = df[df['DATE'].dt.date < today].copy()
+    
+    # Group by date and sum total jobs
+    daily = df_filtered.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+    
+    if daily.empty:
+        return "<p>No daily data available.</p>"
+    
+    # Get top 4 peaks based on mode
+    if is_daily:
+        # For daily mode, use YTD data for peaks
+        logging.info("Generating Jobs Data table for DAILY mode - using YTD peaks")
+        top_4_peaks = compute_top_peaks_ytd(daily, 4)
+        title = "Jobs Data - Top 4 Peaks (YTD)"
+    else:
+        # For monthly mode, use current month
+        logging.info("Generating Jobs Data table for MONTHLY mode - using current month peaks")
+        top_4_peaks, _, _ = compute_top_peaks(daily, 4, None, None)
+        title = "Jobs Data - Top 4 Peaks"
+    
+    if top_4_peaks.empty:
+        return f"<p>No peak data available for {title}</p>"
+    
+    # Start the table
+    html = f"""
+<h3>{title}</h3>
+<table class='wrapped'>
+<tbody>
+<tr>
+    <th>Date</th>
+    <th>Baseline</th>
+    <th>Total Jobs</th>
+    <th>Variation</th>
+</tr>
+"""
+    
+    # Add data rows for top 4 only
+    for _, row in top_4_peaks.iterrows():
+        date_str = row['DATE'].strftime('%m/%d/%Y')
+        total_jobs = int(row['TOTAL_JOBS'])
+        variation = baseline - total_jobs
+        
+        # Color coding logic
+        if variation > 0:
+            var_style = 'style="background-color:#90EE90;"'
+            var_text = f"{variation:,}"
+        elif variation < 0:
+            var_style = 'style="background-color:#FFB6C1;"'
+            var_text = f"{variation:,}"
+        else:
+            var_style = ''
+            var_text = "0"
+        
+        html += f"""
+<tr>
+    <td>{date_str}</td>
+    <td>{baseline:,}</td>
+    <td>{total_jobs:,}</td>
+    <td {var_style}>{var_text}</td>
+</tr>
+"""
+    
+    html += "</tbody></table>"
+    return html
+
+def generate_global_peaks_section(df: pd.DataFrame,
+                                  baseline: int,
+                                  top_n: int = 4,
+                                  is_daily: bool = False) -> str:
+    """
+    Generate the peak comparison chart.
+    For daily mode: shows YTD peaks
+    For monthly mode: shows current month peaks
+    """
+    # Filter out today's data first
+    today = datetime.now().date()
+    df_filtered = df[df['DATE'].dt.date < today].copy()
+    
+    daily = df_filtered.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+    
+    if daily.empty:
+        return "<p>No data available for peaks chart.</p>"
+    
+    if is_daily:
+        logging.info("Generating peaks chart for DAILY mode - using YTD data")
+        peaks = compute_top_peaks_ytd(daily, top_n)
+        chart_title = "Top 4 Peaks of YTD"
+    else:
+        logging.info("Generating peaks chart for MONTHLY mode - using current month")
+        peaks, y, m = compute_top_peaks(daily, top_n, None, None)
+        if peaks.empty:
+            return "<p>No peak data for current month.</p>"
+        # Get the month from the actual data
+        month_label = peaks['DATE'].dt.strftime('%b').iloc[0] if not peaks.empty else "Current Month"
+        chart_title = f"Top {len(peaks)} Peaks of {month_label}"
+    
+    if peaks.empty:
+        return "<p>No peak data available.</p>"
+        
+    chart = peaks_transposed_chart(peaks, baseline, chart_title)
+    return chart
+
+def generate_monthly_usage_chart(df: pd.DataFrame, baseline: int) -> str:
+    """
+    Generate Overall Monthly Task Usage Report line chart - excluding today's data
+    """
+    # Filter out today's data
+    today = datetime.now().date()
+    df_filtered = df[df['DATE'].dt.date < today].copy()
+    
+    # Group by date and sum
+    daily = df_filtered.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
+    
+    if daily.empty:
+        return "<p>No data for monthly usage chart.</p>"
+    
+    # Build the data table for the chart
+    header_row = "<tr><th>Date</th>"
+    for _, row in daily.iterrows():
+        date_str = row['DATE'].strftime('%Y-%m-%d')
+        header_row += f"<th>{date_str}</th>"
+    header_row += "</tr>"
+    
+    # Baseline row
+    baseline_row = "<tr><td>Baseline</td>"
+    for _ in range(len(daily)):
+        baseline_row += f"<td>{baseline}</td>"
+    baseline_row += "</tr>"
+    
+    # Total Jobs row
+    jobs_row = "<tr><td>Sum of TOTAL_JOBS</td>"
+    for _, row in daily.iterrows():
+        jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+    jobs_row += "</tr>"
+    
+    return f"""
+<h3>Overall Monthly Task Usage Report</h3>
+<ac:structured-macro ac:name="chart">
+  <ac:parameter ac:name="title">Overall Monthly Task Usage Report</ac:parameter>
+  <ac:parameter ac:name="type">line</ac:parameter>
+  <ac:parameter ac:name="width">1200</ac:parameter>
+  <ac:parameter ac:name="height">400</ac:parameter>
+  <ac:parameter ac:name="3D">false</ac:parameter>
+  <ac:parameter ac:name="legend">true</ac:parameter>
+  <ac:parameter ac:name="showValues">false</ac:parameter>
+  <ac:parameter ac:name="colors">#829A3D,#B83939</ac:parameter>
+  <ac:parameter ac:name="dataDisplay">after</ac:parameter>
+  <ac:parameter ac:name="xLabel">Date</ac:parameter>
+  <ac:parameter ac:name="yLabel">Jobs</ac:parameter>
+  <ac:rich-text-body>
+    <table>
+      <tbody>
+        {header_row}
+        {baseline_row}
+        {jobs_row}
+      </tbody>
+    </table>
+  </ac:rich-text-body>
+</ac:structured-macro>
+"""
+
+def generate_monthly_country_breakdown_chart(df: pd.DataFrame) -> str:
+    """
+    Generate monthly stacked bar chart broken down by country.
+    Excludes today's data.
+    """
+    # Filter out today's data
+    today = datetime.now().date()
+    df = df[df['DATE'].dt.date < today].copy()
+    
+    # Check if we have country data
+    country_col = None
+    possible_country_cols = ['COUNTRY', 'Country', 'country', 'REGION', 'Region', 'region']
+    
+    for col in possible_country_cols:
+        if col in df.columns:
+            country_col = col
+            break
+    
+    if country_col is None:
+        return ""
+    
+    # Add month columns
+    df_copy = df.copy()
+    df_copy['Month'] = df_copy['DATE'].dt.strftime('%b')
+    df_copy['MonthNum'] = df_copy['DATE'].dt.month
+    df_copy['Year'] = df_copy['DATE'].dt.year
+    
+    # Create pivot table for monthly breakdown
+    monthly_pivot = df_copy.pivot_table(
+        values='TOTAL_JOBS',
+        index=['Year', 'MonthNum', 'Month'],
+        columns=country_col,
+        aggfunc='sum',
+        fill_value=0
+    ).reset_index()
+    
+    # Sort by year and month
+    monthly_pivot = monthly_pivot.sort_values(['Year', 'MonthNum'])
+    
+    # Get list of countries
+    countries = sorted([col for col in monthly_pivot.columns if col not in ['Year', 'MonthNum', 'Month']])
+    
+    # Build chart data
+    header_row = "<tr><th>Country</th>"
+    for _, row in monthly_pivot.iterrows():
+        header_row += f"<th>{row['Month']}</th>"
+    header_row += "</tr>"
+    
+    # Add data rows for each country
+    data_rows = []
+    for country in countries:
+        country_row = f"<tr><td>Sum of {country}</td>"
+        for _, row in monthly_pivot.iterrows():
+            value = int(row[country]) if country in row and pd.notna(row[country]) else 0
+            country_row += f"<td>{value}</td>"
+        country_row += "</tr>"
+        data_rows.append(country_row)
+    
+    table_html = f"""<table><tbody>{header_row}{''.join(data_rows)}</tbody></table>"""
+    
+    # Also create summary table
+    summary_html = """
+<h3>Monthly Summary by Country</h3>
+<table class='wrapped'>
+<tbody>
+<tr>
+    <th>Months</th>
+"""
+    
+    for country in countries:
+        summary_html += f"<th>Sum of {country}</th>"
+    summary_html += "</tr>"
+    
+    for _, row in monthly_pivot.iterrows():
+        summary_html += f"<tr><td>{row['Month']}</td>"
+        for country in countries:
+            value = int(row[country]) if country in row and pd.notna(row[country]) else 0
+            summary_html += f"<td>{value:,}</td>"
+        summary_html += "</tr>"
+    
+    summary_html += "</tbody></table>"
+    
+    # Generate stacked bar chart
+    chart_html = f"""
+<h3>Monthly Jobs by Country</h3>
+<ac:structured-macro ac:name="chart">
+  <ac:parameter ac:name="type">bar</ac:parameter>
+  <ac:parameter ac:name="title">Monthly Jobs by Country</ac:parameter>
+  <ac:parameter ac:name="width">1400</ac:parameter>
+  <ac:parameter ac:name="height">700</ac:parameter>
+  <ac:parameter ac:name="3D">true</ac:parameter>
+  <ac:parameter ac:name="legend">true</ac:parameter>
+  <ac:parameter ac:name="orientation">vertical</ac:parameter>
+  <ac:parameter ac:name="stacked">true</ac:parameter>
+  <ac:parameter ac:name="showValues">true</ac:parameter>
+  <ac:parameter ac:name="xaxisLabel">Month</ac:parameter>
+  <ac:parameter ac:name="yaxisLabel">Jobs</ac:parameter>
+  <ac:parameter ac:name="dataDisplay">after</ac:parameter>
+  <ac:rich-text-body>
+    {table_html}
+  </ac:rich-text-body>
+</ac:structured-macro>
+"""
+    
+    return summary_html + chart_html
+
+def generate_daily_total_single_series(df: pd.DataFrame,
+                                       baseline: int,
+                                       title: str = "Daily Total Jobs") -> str:
+    """
+    Generate daily totals chart - simple for monthly mode
+    Excludes today's data.
+    """
+    # Filter out today's data
+    today = datetime.now().date()
+    df_filtered = df[df['DATE'].dt.date < today].copy()
+    
+    daily = df_filtered.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
+    if daily.empty:
+        return "<p>No daily data.</p>"
+    
+    # Create header row
+    header_row = "<tr><th>Series</th>"
+    for _, row in daily.iterrows():
+        date_str = row['DATE'].strftime('%d-%m')
+        header_row += f"<th>{date_str}</th>"
+    header_row += "</tr>"
+    
+    # Create data row
+    data_row = "<tr><td>Total Jobs</td>"
+    for _, row in daily.iterrows():
+        data_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+    data_row += "</tr>"
+    
+    table_html = f"""<table><tbody>{header_row}{data_row}</tbody></table>"""
+    
+    chart = f"""
+<h3>{title}</h3>
+<ac:structured-macro ac:name="chart">
+  <ac:parameter ac:name="type">bar</ac:parameter>
+  <ac:parameter ac:name="title">{title}</ac:parameter>
+  <ac:parameter ac:name="width">1200</ac:parameter>
+  <ac:parameter ac:name="height">600</ac:parameter>
+  <ac:parameter ac:name="3D">true</ac:parameter>
+  <ac:parameter ac:name="legend">false</ac:parameter>
+  <ac:parameter ac:name="orientation">vertical</ac:parameter>
+  <ac:parameter ac:name="labelAngle">90</ac:parameter>
+  <ac:parameter ac:name="stacked">false</ac:parameter>
+  <ac:parameter ac:name="showValues">true</ac:parameter>
+  <ac:parameter ac:name="xaxisLabel">Date</ac:parameter>
+  <ac:parameter ac:name="yaxisLabel">Jobs</ac:parameter>
+  <ac:parameter ac:name="colors">#829A3D</ac:parameter>
+  <ac:parameter ac:name="dataDisplay">after</ac:parameter>
+  <ac:parameter ac:name="fontSize">10</ac:parameter>
+  <ac:rich-text-body>
+    {table_html}
+  </ac:rich-text-body>
+</ac:structured-macro>
+"""
+    return chart
+
+def generate_country_summary_chart(df: pd.DataFrame,
+                                  title: str = "Total Jobs by Country") -> str:
+    """
+    Generate bar chart showing total jobs per country with summary table.
+    Excludes today's data.
+    """
+    # Filter out today's data
+    today = datetime.now().date()
+    df = df[df['DATE'].dt.date < today].copy()
+    
+    # Check if we have country data
+    country_col = None
+    possible_country_cols = ['COUNTRY', 'Country', 'country', 'REGION', 'Region', 'region']
+    
+    for col in possible_country_cols:
+        if col in df.columns:
+            country_col = col
+            break
+    
+    if country_col is None:
+        return "<p>No country data available for country summary chart.</p>"
+    
+    # Group by country and sum total jobs
+    country_totals = df.groupby(country_col, as_index=False)['TOTAL_JOBS'].sum()
+    country_totals = country_totals.sort_values('TOTAL_JOBS', ascending=False)
+    
+    if country_totals.empty:
+        return "<p>No country data available.</p>"
+    
+    # Create summary table
+    table_html = f"""
+<h4>Country Summary</h4>
+<table class='wrapped'>
+<tbody>
+<tr>
+    <th>Country/Market</th>
+    <th>Total Jobs</th>
+    <th>Percentage</th>
+</tr>
+"""
+    
+    total_all_jobs = country_totals['TOTAL_JOBS'].sum()
+    
+    for _, row in country_totals.iterrows():
+        country = row[country_col]
+        jobs = int(row['TOTAL_JOBS'])
+        percentage = (jobs / total_all_jobs * 100) if total_all_jobs > 0 else 0
+        table_html += f"""
+<tr>
+    <td>{country}</td>
+    <td>{jobs:,}</td>
+    <td>{percentage:.1f}%</td>
+</tr>
+"""
+    
+    table_html += "</tbody></table>"
+    
+    # Create chart table data
+    chart_header = "<tr><th>Country/Market</th><th>Task Count</th></tr>"
+    chart_rows = []
+    for _, row in country_totals.iterrows():
+        country = row[country_col]
+        jobs = int(row['TOTAL_JOBS'])
+        chart_rows.append(f"<tr><td>{country}</td><td>{jobs}</td></tr>")
+    
+    chart_table_html = f"""<table><tbody>{chart_header}{''.join(chart_rows)}</tbody></table>"""
+    
+    chart = f"""
+<h3>{title}</h3>
+<ac:structured-macro ac:name="chart">
+  <ac:parameter ac:name="type">bar</ac:parameter>
+  <ac:parameter ac:name="title">{title}</ac:parameter>
+  <ac:parameter ac:name="width">1200</ac:parameter>
+  <ac:parameter ac:name="height">500</ac:parameter>
+  <ac:parameter ac:name="3D">true</ac:parameter>
+  <ac:parameter ac:name="legend">false</ac:parameter>
+  <ac:parameter ac:name="orientation">vertical</ac:parameter>
+  <ac:parameter ac:name="stacked">false</ac:parameter>
+  <ac:parameter ac:name="showValues">true</ac:parameter>
+  <ac:parameter ac:name="xaxisLabel">Country/Market</ac:parameter>
+  <ac:parameter ac:name="yaxisLabel">Task Count</ac:parameter>
+  <ac:parameter ac:name="colors">#829A3D</ac:parameter>
+  <ac:parameter ac:name="dataDisplay">after</ac:parameter>
+  <ac:parameter ac:name="labelAngle">45</ac:parameter>
+  <ac:rich-text-body>
+    {chart_table_html}
+  </ac:rich-text-body>
+</ac:structured-macro>
+"""
+    
+    return table_html + chart
+
+# =============================================================
+# Confluence REST Helpers
+# =============================================================
+
+def get_page_info(session: requests.Session, config: Dict) -> Tuple[Optional[str], Optional[int]]:
+    try:
+        base_url = config['CONFLUENCE_URL'].rstrip('/')
+        if not base_url.endswith('/content'):
+            if base_url.endswith('/rest/api'):
+                base_url = base_url + "/content"
+            else:
+                base_url = base_url + "/rest/api/content"
+        
+        params = {
+            'title': config['PAGE_TITLE'],
+            'spaceKey': config['SPACE_KEY'],
+            'expand': 'version'
+        }
+        resp = session.get(base_url, params=params)
+        
+        if resp.status_code != 200:
+            alt = f"{base_url}/search?cql=space={config['SPACE_KEY']} AND title=\"{config['PAGE_TITLE']}\""
+            resp = session.get(alt)
+        
+        if resp.status_code != 200:
+            logging.error(f"Page lookup failed: {resp.status_code} - {resp.text}")
+            return None, None
+        
+        data = resp.json()
+        if 'results' in data and data.get('size', 0) > 0:
+            return data['results'][0]['id'], data['results'][0]['version']['number']
+        if isinstance(data, list) and data:
+            return data[0]['id'], data[0]['version']['number']
+        return None, None
+    except Exception as e:
+        logging.error(f"Error getting page info: {e}")
+        return None, None
+
+def create_or_update_page(session: requests.Session,
+                          config: Dict,
+                          content: str,
+                          page_id: Optional[str] = None,
+                          version: Optional[int] = None) -> bool:
+    try:
+        base_url = config['CONFLUENCE_URL'].rstrip('/')
+        if not base_url.endswith('/content'):
+            if base_url.endswith('/rest/api'):
+                base_url = base_url + "/content"
+            else:
+                base_url = base_url + "/rest/api/content"
+        
+        payload = {
+            "type": "page",
+            "title": config['PAGE_TITLE'],
+            "space": {"key": config['SPACE_KEY']},
+            "body": {"storage": {"value": content, "representation": "storage"}}
+        }
+        
+        if page_id and version is not None:
+            payload["id"] = page_id
+            payload["version"] = {"number": version + 1}
+            resp = session.put(f"{base_url}/{page_id}", json=payload)
+        else:
+            resp = session.post(base_url, json=payload)
+        
+        if resp.status_code >= 400:
+            logging.error(f"Create/Update failed: {resp.status_code} - {resp.text}")
+            return False
+        
+        logging.info(f"Page '{config['PAGE_TITLE']}' {'updated' if page_id else 'created'} successfully.")
+        return True
+    except Exception as e:
+        logging.error(f"Error creating/updating page: {e}")
+        return False
+
+def test_connection(session: requests.Session, config: Dict) -> bool:
+    try:
+        base = config['CONFLUENCE_URL'].rstrip('/')
+        if base.endswith('/content'):
+            base = base[:-8]
+        elif not base.endswith('/rest/api'):
+            base = base + '/rest/api'
+        test_url = f"{base}/space"
+        resp = session.get(test_url, params={'limit': 1})
+        return resp.status_code == 200
+    except Exception as e:
+        logging.error(f"Connection test exception: {e}")
+        return False
+
+# =============================================================
+# Main Publish Function
+# =============================================================
+
+def publish_to_confluence(report_file='task_usage_report_by_region.csv',
+                          test_mode=False,
+                          skip_actual_upload: bool = False) -> bool:
+    """
+    Publish report to Confluence with improved config file handling.
+    """
+    try:
+        # Check report file exists
+        if not os.path.exists(report_file):
+            logging.error(f"Report file {report_file} not found.")
+            return False
+        
+        # Find and load config
+        cfg_path = find_config_file(test_mode)
+        if not cfg_path:
+            logging.error("Could not find config file")
+            return False
+        
+        config = load_config(cfg_path)
+        if not config:
+            logging.error("Failed to load config")
+            return False
+        
+        # Add test suffix if in test mode
+        if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
+            config['PAGE_TITLE'] += "-TEST"
+
+        monthly = _is_monthly_run(config)
+        is_daily = not monthly
+        baseline = config.get('BASELINE', 1899206)
+
+        logging.info("="*60)
+        logging.info(f"Publishing to Confluence")
+        logging.info(f"Mode: {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
+        logging.info(f"Page title: {config['PAGE_TITLE']}")
+        logging.info(f"Baseline: {baseline:,}")
+        logging.info(f"Today's date (excluded): {datetime.now().date()}")
+        logging.info("="*60)
+
+        # Load and sanitize data
+        df, ok = load_csv_data(report_file)
+        if not ok:
+            logging.error("Failed to load CSV data")
+            return False
+        
+        df = sanitize_total_jobs(df, preferred_col=config.get('JOB_COLUMN'))
+
+        # Create session if not skipping upload
+        session = None
+        if not skip_actual_upload:
+            session = create_session(config)
+            if not session:
+                logging.error("Failed to create session")
+                return False
+            
+            if not test_connection(session, config):
+                logging.error("Connection test failed.")
+                return False
+
+        # Generate content sections (all will exclude today's data and use proper YTD for daily)
+        peaks_section = generate_global_peaks_section(df, baseline, is_daily=is_daily)
+        jobs_data_table = generate_jobs_data_table(df, baseline, is_daily=is_daily)
+        monthly_usage_chart = generate_monthly_usage_chart(df, baseline)
+        
+        # For daily mode, show monthly country breakdown chart and table
+        if is_daily:
+            logging.info("Generating daily mode charts with YTD peaks and country breakdown")
+            monthly_country_chart = generate_monthly_country_breakdown_chart(df)
+        else:
+            logging.info("Generating monthly mode charts with current month peaks")
+            monthly_country_chart = ""
+            
+        # Simple daily chart only for monthly mode
+        if not is_daily:
+            daily_chart = generate_daily_total_single_series(df, baseline, "Daily Total Jobs")
+        else:
+            daily_chart = ""
+            
+        country_chart = generate_country_summary_chart(df, "Total Jobs by Country")
+
+        # Create page content
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        user = os.environ.get('USER', 'automated')
+        yesterday = (datetime.now().date() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        title_suffix = " - YTD" if is_daily else ""
+        date_range_desc = "YTD (Year-to-Date)" if is_daily else "Current Month"
+        
+        content = f"""
+<h1>Task Usage Report{title_suffix}{' - TEST DATA' if test_mode else ''}</h1>
+<p><strong>Last updated:</strong> {timestamp}</p>
+<p><strong>Generated by:</strong> {user}</p>
+<p><strong>Data through:</strong> {yesterday} (excludes today)</p>
+<p><strong>Report Mode:</strong> {date_range_desc}</p>
+<h2>Overall Monthly Task Usage Report</h2>
+{jobs_data_table}
+{peaks_section}
+{monthly_usage_chart}
+{monthly_country_chart}
+{daily_chart}
+{country_chart}
+<hr />
+<p><em>Note: This report shows the task usage data through {yesterday} in {date_range_desc} mode{' (TEST MODE)' if test_mode else ''}.</em></p>
+"""
+
+        # Skip actual upload if requested
+        if skip_actual_upload:
+            logging.info("Skipping actual upload (simulation mode)")
+            return True
+
+        # Get page info and create/update
+        page_id, version = get_page_info(session, config)
+        return create_or_update_page(session, config, content, page_id, version)
+
+    except Exception as e:
+        logging.error(f"Error in publish_to_confluence: {e}")
         import traceback
         logging.error(traceback.format_exc())
         return False
-    finally:
-        os.chdir(original_cwd)
 
+# =============================================================
+# Multi-Country Publishing
+# =============================================================
 
-# ---------------------------------------------------------------------------
-# Multi-Country Workflow Function (Original)
-# ---------------------------------------------------------------------------
-
-def run_workflow_multi(countries, default_output_csv, execution_timestamp, execution_user, test_mode=False, publish_test=True):
+def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
+                                test_mode: bool = False,
+                                skip_actual_upload: bool = False) -> bool:
     """
-    Run workflow for multiple countries and aggregate results.
-    Simple approach - create date folder and process countries there.
+    Publish multi-country report to Confluence.
     """
-    # Create date-based folder for organization
-    today_folder = datetime.now().strftime('%Y-%m-%d')
-    output_dir = os.path.join('reports', today_folder)
-    os.makedirs(output_dir, exist_ok=True)
-    
-    logging.info(f"Created output directory: {output_dir}")
-    
-    # Store original working directory
-    original_cwd = os.getcwd()
-    
     try:
-        # Process each country
-        country_results = []
-        for country in countries:
-            country_name = country['name']
-            config_file = country['config_file']
-            query_file = country['query_file']  # This might be a temp file with updated dates
-            output_csv = os.path.join(output_dir, f"data_{country_name.lower()}.csv")
-            
-            logging.info(f"Processing country: {country_name}")
-            logging.info(f"Config: {config_file}")
-            logging.info(f"Query: {query_file}")
-            logging.info(f"Output: {output_csv}")
-            
-            # Run workflow for this country (stay in root directory)
-            logging.info(f"About to call run_workflow for {country_name}")
-            result = run_workflow(
-                config_file,
-                query_file,
-                output_csv,
-                execution_timestamp,
-                execution_user,
-                test_mode=test_mode,
-                publish_test=False  # Don't publish individual countries
-            )
-            logging.info(f"run_workflow returned: {result} for {country_name}")
-            
-            # Analyze the generated CSV file
-            csv_analysis = analyze_csv_file(output_csv)
-            logging.info(f"CSV Analysis for {country_name}: {csv_analysis}")
-            
-            if result == 0:
-                country_results.append({
-                    'name': country_name,
-                    'csv_file': output_csv,
-                    'success': True
-                })
-                logging.info(f"Successfully processed {country_name}")
-            else:
-                country_results.append({
-                    'name': country_name,
-                    'csv_file': output_csv,
-                    'success': False
-                })
-                logging.error(f"Failed to process {country_name}")
-        
-        # Check if any countries were processed successfully
-        successful_countries = [r for r in country_results if r['success']]
-        if not successful_countries:
-            logging.error("No countries processed successfully")
+        # Find and load config
+        cfg_path = find_config_file(test_mode)
+        if not cfg_path:
+            logging.error("Could not find config file for multi-country")
             return False
         
-        # Analyze all generated CSV files before aggregation
-        logging.info("="*50)
-        logging.info("INDIVIDUAL COUNTRY CSV ANALYSIS")
-        logging.info("="*50)
-        for result in successful_countries:
-            csv_path = result['csv_file']
-            analysis = analyze_csv_file(csv_path)
-            logging.info(f"{result['name']}: {analysis}")
-            
-            # Show first few lines of each CSV file
-            try:
-                with open(csv_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()[:3]  # First 3 lines
-                logging.info(f"First few lines of {result['name']} CSV:")
-                for i, line in enumerate(lines):
-                    logging.info(f"  Line {i+1}: {line.strip()}")
-            except Exception as e:
-                logging.error(f"Could not read {csv_path}: {e}")
-        
-        # Change to output directory for aggregation
-        os.chdir(output_dir)
-        logging.info(f"Changed to output directory: {os.getcwd()}")
-        logging.info(f"Files in output directory: {os.listdir('.')}")
-        
-        # List all CSV files that will be processed
-        csv_files = [f for f in os.listdir('.') if f.startswith('data_') and f.endswith('.csv')]
-        logging.info(f"CSV files found for processing: {csv_files}")
-        
-        # Use the FIXED CSV processor
-        logging.info("Using FIXED CSV processor...")
-        processor = CSVProcessor(execution_timestamp, execution_user)
-        success = processor.process_all_files()  # No parameters needed
-        logging.info(f"Fixed CSV processor returned: {success}")
-        
-        if not success:
-            logging.error("Failed to aggregate country data")
+        config = load_config(cfg_path)
+        if not config:
+            logging.error("Failed to load config for multi-country")
             return False
         
-        # Analyze the generated aggregated reports
-        aggregated_files = [
-            "task_usage_report_by_region.csv",
-            "task_usage_report.csv"
-        ]
-        
-        logging.info("="*50)
-        logging.info("AGGREGATED REPORTS ANALYSIS")
-        logging.info("="*50)
-        for report_file in aggregated_files:
-            if os.path.exists(report_file):
-                analysis = analyze_csv_file(report_file)
-                logging.info(f"{report_file}: {analysis}")
-                
-                # Show first few lines of aggregated reports
-                try:
-                    with open(report_file, 'r', encoding='utf-8') as f:
-                        lines = f.readlines()[:5]  # First 5 lines
-                    logging.info(f"First few lines of {report_file}:")
-                    for i, line in enumerate(lines):
-                        logging.info(f"  Line {i+1}: {line.strip()}")
-                except Exception as e:
-                    logging.error(f"Could not read {report_file}: {e}")
-        
-        # Copy aggregated reports to main directory for publishing
-        aggregated_report = "task_usage_report_by_region.csv"
-        detailed_report = "task_usage_report.csv"
-        
-        main_aggregated_path = os.path.join(original_cwd, aggregated_report)
-        main_detailed_path = os.path.join(original_cwd, detailed_report)
-        
-        if os.path.exists(aggregated_report):
-            shutil.copy2(aggregated_report, main_aggregated_path)
-            logging.info(f"Copied aggregated report to {main_aggregated_path}")
-        
-        if os.path.exists(detailed_report):
-            shutil.copy2(detailed_report, main_detailed_path)
-            logging.info(f"Copied detailed report to {main_detailed_path}")
-        
-        # Change back to original directory for publishing
-        os.chdir(original_cwd)
-        
-        # Publish aggregated report if not skipping
-        if publish_test:
-            logging.info("Publishing aggregated report to Confluence...")
-            
-            publish_success = publish_to_confluence(
-                report_file=aggregated_report,
-                test_mode=test_mode,
-                skip_actual_upload=False
-            )
-            if not publish_success:
-                logging.error("Failed to publish to Confluence")
+        if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
+            config['PAGE_TITLE'] += "-TEST"
+
+        monthly = _is_monthly_run(config)
+        is_daily = not monthly
+        baseline = config.get('BASELINE', 1899206)
+
+        logging.info("="*60)
+        logging.info(f"Publishing Multi-Country Report to Confluence")
+        logging.info(f"Mode: {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
+        logging.info(f"Page title: {config['PAGE_TITLE']}")
+        logging.info("="*60)
+
+        # Process all country files
+        frames = []
+        for ctry, path in report_files:
+            if not os.path.exists(path):
+                logging.warning(f"Missing report for {ctry}: {path}")
+                continue
+            df = pd.read_csv(path)
+            if 'DATE' in df.columns:
+                df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
+            df = sanitize_total_jobs(df, preferred_col=config.get('JOB_COLUMN'))
+            df['COUNTRY'] = ctry
+            frames.append(df)
+
+        if not frames:
+            logging.error("No country data to publish.")
+            return False
+
+        all_df = pd.concat(frames, ignore_index=True)
+
+        # Create session if not skipping
+        session = None
+        if not skip_actual_upload:
+            session = create_session(config)
+            if not session:
                 return False
+            if not test_connection(session, config):
+                logging.error("Connection test failed.")
+                return False
+
+        # Generate content (all will exclude today's data and use YTD for daily)
+        global_peaks = generate_global_peaks_section(all_df, baseline, is_daily=is_daily)
+        jobs_data_table = generate_jobs_data_table(all_df, baseline, is_daily=is_daily)
+        monthly_usage_chart = generate_monthly_usage_chart(all_df, baseline)
         
-        # Log summary of results
-        logging.info("="*60)
-        logging.info("MULTI-COUNTRY WORKFLOW SUMMARY")
-        logging.info("="*60)
-        logging.info(f"Output Directory: {output_dir}")
-        logging.info(f"Total Countries: {len(country_results)}")
-        logging.info(f"Successful: {len(successful_countries)}")
-        logging.info(f"Failed: {len(country_results) - len(successful_countries)}")
+        # For daily mode, show country breakdown
+        if is_daily:
+            monthly_country_chart = generate_monthly_country_breakdown_chart(all_df)
+        else:
+            monthly_country_chart = ""
+            
+        if not is_daily:
+            global_daily = generate_daily_total_single_series(all_df, baseline, "Daily Total Jobs (All Countries)")
+        else:
+            global_daily = ""
+            
+        country_chart = generate_country_summary_chart(all_df, "Total Jobs by Country")
+
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        user = os.environ.get('USER', 'automated')
+        yesterday = (datetime.now().date() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
         
-        for result in country_results:
-            status = "✓ SUCCESS" if result['success'] else "✗ FAILED"
-            logging.info(f"  {result['name']}: {status}")
+        title_suffix = " - YTD" if is_daily else ""
+        date_range_desc = "YTD (Year-to-Date)" if is_daily else "Current Month"
         
-        if successful_countries:
-            logging.info(f"Aggregated reports created and {'published' if publish_test else 'ready for publishing'}")
-        
-        logging.info("="*60)
-        
-        return len(successful_countries) > 0
-        
+        content = f"""
+<h1>Multi-Country Task Usage Report{title_suffix}{' - TEST DATA' if test_mode else ''}</h1>
+<p><strong>Last updated:</strong> {timestamp}</p>
+<p><strong>Generated by:</strong> {user}</p>
+<p><strong>Data through:</strong> {yesterday} (excludes today)</p>
+<p><strong>Report Mode:</strong> {date_range_desc}</p>
+<h2>Overall Monthly Task Usage Report</h2>
+{jobs_data_table}
+{global_peaks}
+{monthly_usage_chart}
+{monthly_country_chart}
+{global_daily}
+{country_chart}
+<hr />
+<p><em>Note: This report shows aggregated data from multiple countries through {yesterday} in {date_range_desc} mode{' (TEST MODE)' if test_mode else ''}.</em></p>
+"""
+
+        if skip_actual_upload:
+            logging.info("Simulation only (multi-country).")
+            return True
+
+        page_id, version = get_page_info(session, config)
+        return create_or_update_page(session, config, content, page_id, version)
+
     except Exception as e:
-        logging.error(f"Error in multi-country workflow: {e}")
+        logging.error(f"Error in multi-country publish: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         return False
-    finally:
-        # Ensure we're back in the original directory
-        os.chdir(original_cwd)
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main():
-    parser = argparse.ArgumentParser(description="Enhanced data workflow with CSV auto-discovery")
-    parser.add_argument("--test", action="store_true", help="Run in test mode using predefined test CSV")
-    parser.add_argument("--no-publish", action="store_true", help="Skip actual publishing to Confluence")
-    parser.add_argument("--monthly", action="store_true", help="Use previous month date range in SQL query")
-    parser.add_argument("--daily", action="store_true", help="Use year-to-date range in SQL query")
-    parser.add_argument("--countries-config", help="Path to countries JSON to run multi-country workflow")
-    parser.add_argument("--target-month", help="Target month in YYYYMM format (e.g., 202509) - optional, defaults to current month")
-    parser.add_argument("--csv-countries-only", action="store_true", help="Process only CSV file countries using auto-discovery")
-    parser.add_argument("--list-csv-countries", action="store_true", help="List available CSV countries for target month")
-    args = parser.parse_args()
-
-    setup_logging()
-    os.makedirs('config', exist_ok=True)
-
-    # Determine target month with proper monthly logic
-    if args.target_month:
-        target_month = args.target_month
-    elif args.monthly:
-        # For monthly mode, use previous completed month (same as database logic)
-        today = datetime.now()
-        first_day_current = datetime(today.year, today.month, 1)
-        last_day_prev = first_day_current - timedelta(days=1)
-        target_month = last_day_prev.strftime('%Y%m')
-        logging.info(f"Monthly mode: targeting previous completed month {target_month}")
-    else:
-        # Default to current month for daily or no-flag runs
-        target_month = datetime.now().strftime('%Y%m')
-        logging.info(f"Default mode: targeting current month {target_month}")
-
-    # Handle CSV-only operations first
-    if args.list_csv_countries:
-        # Just list available CSV countries without processing
-        try:
-            with open('config/config.json', 'r') as f:
-                config = json.load(f)
-        except Exception as e:
-            logging.error(f"Could not load config: {e}")
-            return 1
-        
-        csv_path = config.get('CSV_COUNTRIES_PATH')
-        if not csv_path:
-            logging.error("No CSV_COUNTRIES_PATH configured")
-            return 1
-        
-        csv_countries = auto_discover_csv_countries(csv_path, target_month)
-        
-        print(f"\nAvailable CSV countries for {target_month}:")
-        print("=" * 50)
-        if csv_countries:
-            for country in csv_countries:
-                print(f"  {country['country_code']}: {country['filename']}")
-        else:
-            print("  No CSV countries found")
-        print()
-        
-        return 0
-
-    if args.csv_countries_only:
-        # Process only CSV file countries
-        logging.info(f"Processing CSV file countries only for month {target_month}")
-        
-        output_dir = os.path.join('reports', datetime.now().strftime('%Y-%m-%d'))
-        os.makedirs(output_dir, exist_ok=True)
-        
-        csv_results = process_csv_file_countries(output_dir, target_month, args.test)
-        
-        successful_csv = [r for r in csv_results if r['success']]
-        
-        if successful_csv:
-            logging.info(f"Successfully processed {len(successful_csv)} CSV countries")
-            for result in successful_csv:
-                logging.info(f"  ✓ {result['name']}")
-            return 0
-        else:
-            logging.error("No CSV countries processed successfully")
-            return 1
-
-    # Basic presence checks for single-country DB files if not test & not multi
-    if not args.test and not args.countries_config:
-        if not os.path.exists(CONFIG_FILE):
-            logging.error(f"Config file {CONFIG_FILE} not found.")
-            return 1
-        if not os.path.exists(QUERY_FILE):
-            logging.error(f"Query file {QUERY_FILE} not found.")
-            return 1
-
-    if args.monthly and args.daily:
-        logging.error("Cannot use both --monthly and --daily flags together.")
-        return 1
-
-    date_range = None
-    month_name = None
-    if args.monthly:
-        sd, ed, month_name = get_previous_month_date_range()
-        date_range = (sd, ed, month_name)
-    elif args.daily:
-        sd, ed = get_ytd_date_range()
-        date_range = (sd, ed, None)
-
-    # Authentication check (unless skipping publish)
-    if not args.no_publish and not check_password_available():
-        print("No Confluence authentication credentials found.")
-        print("1. Set CONFLUENCE_PASSWORD env var")
-        print("2. Or run setup_secure_config.py to create encrypted config.json")
-        print("3. Or use --no-publish to skip publishing")
-        return 1
-
-    # -----------------------------------------------------------------------
-    # Multi-country Flow (Enhanced)
-    # -----------------------------------------------------------------------
-    if args.countries_config:
-        try:
-            with open(args.countries_config, "r", encoding='utf-8') as f:
-                countries_cfg = json.load(f)
-            countries = countries_cfg.get("countries", [])
-            if not countries:
-                logging.error(f"No countries defined in {args.countries_config}")
-                return 1
-        except Exception as e:
-            logging.error(f"Failed to read countries config: {e}")
-            return 1
-
-        prepared = []
-        for c in countries:
-            name = c.get("name")
-            cfg_path = c.get("config_file") or CONFIG_FILE
-            qry_path = c.get("query_file") or QUERY_FILE
-            if not name or not cfg_path:
-                logging.error("Each country must have 'name' and 'config_file'")
-                return 1
-            if not args.test and not os.path.exists(cfg_path):
-                logging.error(f"Config file for {name} not found: {cfg_path}")
-                return 1
-            if not args.test and not os.path.exists(qry_path):
-                logging.error(f"Query file for {name} not found: {qry_path}")
-                return 1
-
-            # Handle date range updates if specified
-            if date_range:
-                sd, ed, _ = date_range
-                tmp_qry = os.path.join(tempfile.gettempdir(), f"query_{name}.sql")
-                # Copy original base query EXACTLY
-                with open(qry_path, 'r', encoding='utf-8') as src, open(tmp_qry, 'w', encoding='utf-8') as dst:
-                    dst.write(src.read())
-                if not update_query_dates_preserve(tmp_qry, sd, ed):
-                    logging.error(f"Failed to update date range for {name}")
-                    return 1
-                prepared.append({"name": name, "config_file": cfg_path, "query_file": tmp_qry})
-            else:
-                prepared.append({"name": name, "config_file": cfg_path, "query_file": qry_path})
-
-        # Update title ONCE (global JSON) not per country
-        if args.monthly and month_name:
-            update_confluence_page_title(TITLE_CONFIG_FILE, month_name, is_daily=False)
-        elif args.daily:
-            update_confluence_page_title(TITLE_CONFIG_FILE, "YTD", is_daily=True)
-
-        # Use enhanced workflow that handles both database and CSV countries
-        result = run_workflow_multi_enhanced(
-            countries=prepared,
-            default_output_csv=OUTPUT_CSV,
-            execution_timestamp=EXECUTION_TIMESTAMP,
-            execution_user=EXECUTION_USER,
-            test_mode=args.test,
-            publish_test=not args.no_publish,
-            target_month=target_month
-        )
-        return 0 if result else 1
-
-    # -----------------------------------------------------------------------
-    # Single-country Flow
-    # -----------------------------------------------------------------------
-    if args.monthly:
-        sd, ed, month_name = date_range
-        if not update_query_dates_preserve(QUERY_FILE, sd, ed):
-            logging.error("Failed to update query dates for previous month")
-            return 1
-        if not update_confluence_page_title(TITLE_CONFIG_FILE, month_name, is_daily=False):
-            logging.warning("Failed to update Confluence page title (JSON).")
-        else:
-            logging.info(f"Confluence page title updated to include: {month_name}")
-        logging.info(f"Query date range updated (monthly) by {EXECUTION_USER}")
-
-    elif args.daily:
-        sd, ed, _ = date_range
-        if not update_query_dates_preserve(QUERY_FILE, sd, ed):
-            logging.error("Failed to update query dates for YTD")
-            return 1
-        if not update_confluence_page_title(TITLE_CONFIG_FILE, "YTD", is_daily=True):
-            logging.warning("Failed to update Confluence page title (JSON).")
-        else:
-            logging.info("Confluence page title updated to include: YTD")
-        logging.info(f"Query date range updated (daily/YTD) by {EXECUTION_USER}")
-
-    # Run single workflow
-    result = run_workflow(
-        CONFIG_FILE,
-        QUERY_FILE,
-        OUTPUT_CSV,
-        EXECUTION_TIMESTAMP,
-        EXECUTION_USER,
-        test_mode=args.test,
-        publish_test=not args.no_publish
-    )
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------------------------------
+# =============================================================
+# CLI Entry Point
+# =============================================================
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import argparse
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    
+    p = argparse.ArgumentParser(description="Confluence Publisher")
+    p.add_argument("--file", help="Single report CSV to publish")
+    p.add_argument("--multi", nargs="*", help="List of COUNTRY=path/to/file.csv")
+    p.add_argument("--simulate", action="store_true", help="Skip actual upload")
+    p.add_argument("--test", action="store_true", help="Test mode")
+    args = p.parse_args()
+    
+    if args.file:
+        ok = publish_to_confluence(
+            report_file=args.file,
+            test_mode=args.test,
+            skip_actual_upload=args.simulate
+        )
+        print("Single publish:", "OK" if ok else "FAILED")
+    elif args.multi:
+        pairs = []
+        for item in args.multi:
+            if "=" not in item:
+                print(f"Invalid format: {item}")
+                continue
+            ctry, path = item.split("=", 1)
+            pairs.append((ctry.strip(), path.strip()))
+        ok = publish_to_confluence_multi(
+            report_files=pairs,
+            test_mode=args.test,
+            skip_actual_upload=args.simulate
+        )
+        print("Multi publish:", "OK" if ok else "FAILED")
+    else:
+        p.print_help()
