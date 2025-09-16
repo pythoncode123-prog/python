@@ -10,7 +10,7 @@ import re
 from typing import Tuple, Optional, Dict, List
 
 # -------------------------------------------------------------
-# Confluence Publisher - Complete Final Version with All Fixes
+# Confluence Publisher - Updated with Daily/Monthly Fixes
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -25,19 +25,16 @@ MONTH_NAMES = (
 # =============================================================
 
 def _is_monthly_run(config: Dict) -> bool:
+    """Check if this is a monthly or daily run based on page title"""
     title = config.get('PAGE_TITLE', '')
     if title.endswith('_daily'):
         return False
-    if re.search(r'\s-\s(' + '|'.join(MONTH_NAMES) + r')$', title):
+    if re.search(r'\s-\s(' + '|'.join(MONTH_NAMES) + r'), title):
         return True
     return True  # default behave as monthly
 
 def find_config_file(test_mode: bool = False) -> Optional[str]:
-    """
-    Find the config file in various possible locations.
-    Returns the path to the first existing config file found.
-    """
-    # Define search paths based on mode
+    """Find the config file in various possible locations."""
     if test_mode:
         search_paths = [
             "config/config_test.json",
@@ -53,23 +50,18 @@ def find_config_file(test_mode: bool = False) -> Optional[str]:
             "config_test.json"
         ]
     
-    # Check each path
     for path in search_paths:
         abs_path = os.path.abspath(path)
         if os.path.exists(abs_path):
             logging.info(f"Found config file at: {abs_path}")
             return abs_path
     
-    # Log all attempted paths if none found
     logging.error(f"Config file not found. Searched in: {search_paths}")
     return None
 
 def load_config(config_path: str = None) -> Optional[Dict]:
-    """
-    Load configuration from the specified or auto-detected path.
-    """
+    """Load configuration from the specified or auto-detected path."""
     try:
-        # If no path specified, try to find it
         if not config_path:
             config_path = find_config_file()
             if not config_path:
@@ -94,10 +86,7 @@ def load_config(config_path: str = None) -> Optional[Dict]:
         return None
 
 def get_password_from_config(config: Dict) -> Optional[str]:
-    """
-    Get password from config - either encrypted or base64 encoded.
-    """
-    # Try encrypted password first
+    """Get password from config - either encrypted or base64 encoded."""
     if 'PASSWORD_ENCRYPTED' in config:
         try:
             from lib.secure_config import SecureConfig
@@ -107,7 +96,6 @@ def get_password_from_config(config: Dict) -> Optional[str]:
         except Exception as e:
             logging.warning(f"Could not decrypt password: {e}")
     
-    # Try base64 encoded password
     if 'PASSWORD_B64' in config:
         try:
             import base64
@@ -117,21 +105,17 @@ def get_password_from_config(config: Dict) -> Optional[str]:
         except Exception as e:
             logging.warning(f"Could not decode base64 password: {e}")
     
-    # Try plain password (not recommended)
     if 'PASSWORD' in config:
         return config['PASSWORD']
     
     return None
 
 def create_session(config: Dict) -> Optional[requests.Session]:
-    """
-    Create authenticated session for Confluence API.
-    """
+    """Create authenticated session for Confluence API."""
     session = requests.Session()
     auth_type = config.get('AUTH_TYPE', 'basic').lower()
     
     if auth_type == 'basic':
-        # Try various password sources
         password = (os.environ.get('CONFLUENCE_PASSWORD') or
                     get_password_from_config(config) or
                     config.get('API_TOKEN'))
@@ -184,18 +168,14 @@ def load_csv_data(csv_file: str) -> Tuple[pd.DataFrame, bool]:
         logging.error(f"Error loading CSV {csv_file}: {e}")
         return pd.DataFrame(), False
 
-def sanitize_total_jobs(df: pd.DataFrame,
-                        preferred_col: Optional[str] = None) -> pd.DataFrame:
-    """
-    Ensure we have a numeric TOTAL_JOBS column.
-    """
+def sanitize_total_jobs(df: pd.DataFrame, preferred_col: Optional[str] = None) -> pd.DataFrame:
+    """Ensure we have a numeric TOTAL_JOBS column."""
     candidate = None
     if preferred_col and preferred_col in df.columns:
         candidate = preferred_col
     elif 'TOTAL_JOBS' in df.columns:
         candidate = 'TOTAL_JOBS'
     else:
-        # Try to guess a column with large ints
         for c in df.columns:
             if re.search(r'jobs|count|total', c.lower()):
                 candidate = c
@@ -206,7 +186,6 @@ def sanitize_total_jobs(df: pd.DataFrame,
         df['TOTAL_JOBS'] = pd.Series(dtype='float')
         return df
 
-    # Create/overwrite TOTAL_JOBS from candidate
     cleaned = (
         df[candidate]
         .astype(str)
@@ -215,105 +194,70 @@ def sanitize_total_jobs(df: pd.DataFrame,
         .str.strip()
     )
     df['TOTAL_JOBS'] = pd.to_numeric(cleaned, errors='coerce')
-
     return df
 
 # =============================================================
-# Peak Calculation
+# Peak Calculation (Updated for Daily/Monthly)
 # =============================================================
 
-def latest_year_month(daily_df: pd.DataFrame) -> Tuple[int, int]:
-    latest = daily_df['DATE'].max()
-    return latest.year, latest.month
+def compute_top_peaks_ytd(daily_df: pd.DataFrame, top_n: int = 4) -> pd.DataFrame:
+    """Compute top N peaks for Year-To-Date (for daily reports)"""
+    if daily_df.empty:
+        return daily_df
+    
+    # Get current year
+    current_year = datetime.now().year
+    
+    # Filter to current year
+    ytd_df = daily_df[daily_df['DATE'].dt.year == current_year].copy()
+    
+    if ytd_df.empty:
+        # Fallback to all data if no current year data
+        ytd_df = daily_df.copy()
+    
+    # Get top N peaks by total jobs
+    try:
+        peaks = ytd_df.nlargest(top_n, 'TOTAL_JOBS')
+    except Exception:
+        peaks = ytd_df.sort_values('TOTAL_JOBS', ascending=False).head(top_n)
+    
+    return peaks[['DATE', 'TOTAL_JOBS']].sort_values('DATE')
 
-def filter_to_month(daily_df: pd.DataFrame,
-                    year: Optional[int],
-                    month: Optional[int]) -> pd.DataFrame:
-    if year is None or month is None:
-        year, month = latest_year_month(daily_df)
-    result = daily_df[(daily_df.DATE.dt.year == year) & (daily_df.DATE.dt.month == month)].copy()
-    return result, year, month
-
-def compute_top_peaks(daily_df: pd.DataFrame,
-                      top_n: int,
-                      year: Optional[int],
-                      month: Optional[int]) -> Tuple[pd.DataFrame, int, int]:
-    month_df, y, m = filter_to_month(daily_df, year, month)
+def compute_top_peaks_monthly(daily_df: pd.DataFrame, top_n: int = 4) -> pd.DataFrame:
+    """Compute top N peaks for the latest month (for monthly reports)"""
+    if daily_df.empty:
+        return daily_df
+    
+    # Get the latest month in the data
+    latest_date = daily_df['DATE'].max()
+    year = latest_date.year
+    month = latest_date.month
+    
+    # Filter to that month
+    month_df = daily_df[(daily_df['DATE'].dt.year == year) & 
+                        (daily_df['DATE'].dt.month == month)].copy()
+    
     if month_df.empty:
-        return month_df, y, m
+        return month_df
+    
+    # Get top N peaks
     try:
         peaks = month_df.nlargest(top_n, 'TOTAL_JOBS')
     except Exception:
         peaks = month_df.sort_values('TOTAL_JOBS', ascending=False).head(top_n)
-    return peaks[['DATE', 'TOTAL_JOBS']], y, m
+    
+    return peaks[['DATE', 'TOTAL_JOBS']].sort_values('DATE')
 
 # =============================================================
-# Chart Builders
+# Chart Builders (Updated)
 # =============================================================
 
-def peaks_transposed_chart(peaks_df: pd.DataFrame,
-                           baseline: int,
-                           chart_title: str) -> str:
+def generate_jobs_data_table(df: pd.DataFrame, baseline: int, is_daily: bool = False) -> str:
     """
-    Create chart with transposed data (dates as columns, series as rows)
-    Using specific color codes: red #B83939 for baseline, green #829A3D for total jobs
-    """
-    if peaks_df.empty:
-        return f"<p>No data for {chart_title}.</p>"
-    
-    # Sort by date
-    peaks_df = peaks_df.sort_values('DATE')
-    
-    # Format dates as MM-DD for cleaner display
-    date_format = peaks_df['DATE'].dt.strftime('%m-%d')
-    
-    # First row: Date headers
-    header_row = "<tr><th>Date</th>"
-    for date in date_format:
-        header_row += f"<th>{date}</th>"
-    header_row += "</tr>"
-    
-    # Second row: Baseline values
-    baseline_row = "<tr><td>Baseline</td>"
-    for _ in range(len(peaks_df)):
-        baseline_row += f"<td>{int(baseline)}</td>"
-    baseline_row += "</tr>"
-    
-    # Third row: Total Jobs values
-    jobs_row = "<tr><td>Total Jobs</td>"
-    for _, row in peaks_df.iterrows():
-        jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
-    jobs_row += "</tr>"
-    
-    return f"""
-<ac:structured-macro ac:name="chart">
-  <ac:parameter ac:name="title">{chart_title}</ac:parameter>
-  <ac:parameter ac:name="type">bar</ac:parameter>
-  <ac:parameter ac:name="orientation">vertical</ac:parameter>
-  <ac:parameter ac:name="3D">true</ac:parameter>
-  <ac:parameter ac:name="width">600</ac:parameter>
-  <ac:parameter ac:name="height">400</ac:parameter>
-  <ac:parameter ac:name="legend">true</ac:parameter>
-  <ac:parameter ac:name="dataDisplay">true</ac:parameter>
-  <ac:parameter ac:name="stacked">false</ac:parameter>
-  <ac:parameter ac:name="showValues">true</ac:parameter>
-  <ac:parameter ac:name="colors">#B83939,#829A3D</ac:parameter>
-  <ac:rich-text-body>
-    <table>
-      <tbody>
-        {header_row}
-        {baseline_row}
-        {jobs_row}
-      </tbody>
-    </table>
-  </ac:rich-text-body>
-</ac:structured-macro>
-"""
-
-def generate_jobs_data_table(df: pd.DataFrame, baseline: int) -> str:
-    """
-    Generate the Jobs Data table showing ONLY TOP 4 PEAKS with Date, Baseline, Total Jobs, and Variation.
-    FIXED: Variance = Baseline - Total Jobs (positive when baseline is higher, negative when total jobs are higher)
+    Generate the Jobs Data table showing TOP 4 PEAKS with correct variance calculation.
+    For daily: YTD top 4 peaks
+    For monthly: Current month top 4 peaks
+    Variance = Baseline - Total Jobs (positive when baseline is higher)
     """
     # Group by date and sum total jobs
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
@@ -321,12 +265,20 @@ def generate_jobs_data_table(df: pd.DataFrame, baseline: int) -> str:
     if daily.empty:
         return "<p>No daily data available.</p>"
     
-    # Get only top 4 peaks
-    top_4_peaks = daily.nlargest(4, 'TOTAL_JOBS').sort_values('DATE')
+    # Get top 4 peaks based on mode
+    if is_daily:
+        top_4_peaks = compute_top_peaks_ytd(daily, 4)
+        title = "Jobs Data - Top 4 Peaks (YTD)"
+    else:
+        top_4_peaks = compute_top_peaks_monthly(daily, 4)
+        title = "Jobs Data - Top 4 Peaks (Monthly)"
+    
+    if top_4_peaks.empty:
+        return f"<p>No peak data available for {title}</p>"
     
     # Start the table
-    html = """
-<h3>Jobs Data - Top 4 Peaks</h3>
+    html = f"""
+<h3>{title}</h3>
 <table class='wrapped'>
 <tbody>
 <tr>
@@ -337,19 +289,19 @@ def generate_jobs_data_table(df: pd.DataFrame, baseline: int) -> str:
 </tr>
 """
     
-    # Add data rows for top 4 only
+    # Add data rows
     for _, row in top_4_peaks.iterrows():
         date_str = row['DATE'].strftime('%m/%d/%Y')
         total_jobs = int(row['TOTAL_JOBS'])
-        variation = baseline - total_jobs  # FIXED: Baseline - Total Jobs as requested
+        variation = baseline - total_jobs  # Correct calculation
         
-        # Color coding logic - positive (baseline higher) = green, negative (total jobs higher) = red
+        # Color coding - green when under baseline (positive variation), red when over (negative)
         if variation > 0:
-            var_style = 'style="background-color:#90EE90;"'  # Light green for positive
-            var_text = f"{variation:,}"  # FIXED: Removed + sign
-        elif variation < 0:
-            var_style = 'style="background-color:#FFB6C1;"'  # Light red for negative
+            var_style = 'style="background-color:#90EE90;"'  # Light green
             var_text = f"{variation:,}"
+        elif variation < 0:
+            var_style = 'style="background-color:#FFB6C1;"'  # Light red  
+            var_text = f"{abs(variation):,}"  # Show absolute value for display
         else:
             var_style = ''
             var_text = "0"
@@ -366,55 +318,143 @@ def generate_jobs_data_table(df: pd.DataFrame, baseline: int) -> str:
     html += "</tbody></table>"
     return html
 
-def generate_global_peaks_section(df: pd.DataFrame,
-                                  baseline: int,
-                                  top_n: int = 4) -> str:
-    daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
-    peaks, y, m = compute_top_peaks(daily, top_n, None, None)
-    if peaks.empty:
-        return "<p>No peak data for current month.</p>"
-    month_label = peaks['DATE'].dt.strftime('%b').iloc[0]
-    chart = peaks_transposed_chart(peaks, baseline, f"Top {len(peaks)} Peaks of {month_label}")
-    return chart
+def generate_peaks_chart(peaks_df: pd.DataFrame, baseline: int, chart_title: str) -> str:
+    """
+    Create peaks chart with baseline comparison
+    """
+    if peaks_df.empty:
+        return f"<p>No data for {chart_title}.</p>"
+    
+    # Sort by date
+    peaks_df = peaks_df.sort_values('DATE')
+    
+    # Format dates
+    date_format = peaks_df['DATE'].dt.strftime('%m/%d')
+    
+    # Build chart data table
+    header_row = "<tr><th>Date</th>"
+    for date in date_format:
+        header_row += f"<th>{date}</th>"
+    header_row += "</tr>"
+    
+    baseline_row = "<tr><td>Baseline</td>"
+    for _ in range(len(peaks_df)):
+        baseline_row += f"<td>{int(baseline)}</td>"
+    baseline_row += "</tr>"
+    
+    jobs_row = "<tr><td>Total Jobs</td>"
+    for _, row in peaks_df.iterrows():
+        jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+    jobs_row += "</tr>"
+    
+    return f"""
+<ac:structured-macro ac:name="chart">
+  <ac:parameter ac:name="title">{chart_title}</ac:parameter>
+  <ac:parameter ac:name="type">bar</ac:parameter>
+  <ac:parameter ac:name="orientation">vertical</ac:parameter>
+  <ac:parameter ac:name="3D">true</ac:parameter>
+  <ac:parameter ac:name="width">800</ac:parameter>
+  <ac:parameter ac:name="height">400</ac:parameter>
+  <ac:parameter ac:name="legend">true</ac:parameter>
+  <ac:parameter ac:name="dataDisplay">true</ac:parameter>
+  <ac:parameter ac:name="stacked">false</ac:parameter>
+  <ac:parameter ac:name="showValues">true</ac:parameter>
+  <ac:parameter ac:name="colors">#829A3D,#B83939</ac:parameter>
+  <ac:rich-text-body>
+    <table>
+      <tbody>
+        {header_row}
+        {baseline_row}
+        {jobs_row}
+      </tbody>
+    </table>
+  </ac:rich-text-body>
+</ac:structured-macro>
+"""
 
-def generate_daily_total_single_series(df: pd.DataFrame,
-                                       baseline: int,
-                                       title: str = "Daily Total Jobs") -> str:
+def generate_monthly_usage_chart(df: pd.DataFrame, baseline: int) -> str:
     """
-    Generate daily totals chart with single green color.
-    FIXED: Made X-axis labels vertical and uses DD-MM format for better visibility
+    Generate Overall Monthly Task Usage Report line chart (for all dates in dataset)
+    Shows trend over time with baseline comparison
     """
+    # Group by date and sum
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
+    
+    if daily.empty:
+        return "<p>No data for monthly usage chart.</p>"
+    
+    # Build the data table for the chart
+    header_row = "<tr><th>Date</th>"
+    for _, row in daily.iterrows():
+        date_str = row['DATE'].strftime('%Y-%m-%d')
+        header_row += f"<th>{date_str}</th>"
+    header_row += "</tr>"
+    
+    # Baseline row
+    baseline_row = "<tr><td>Baseline</td>"
+    for _ in range(len(daily)):
+        baseline_row += f"<td>{baseline}</td>"
+    baseline_row += "</tr>"
+    
+    # Total Jobs row
+    jobs_row = "<tr><td>Sum of TOTAL_JOBS</td>"
+    for _, row in daily.iterrows():
+        jobs_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+    jobs_row += "</tr>"
+    
+    return f"""
+<h3>Overall Monthly Task Usage Report</h3>
+<ac:structured-macro ac:name="chart">
+  <ac:parameter ac:name="title">Overall Monthly Task Usage Report</ac:parameter>
+  <ac:parameter ac:name="type">line</ac:parameter>
+  <ac:parameter ac:name="width">1200</ac:parameter>
+  <ac:parameter ac:name="height">400</ac:parameter>
+  <ac:parameter ac:name="3D">false</ac:parameter>
+  <ac:parameter ac:name="legend">true</ac:parameter>
+  <ac:parameter ac:name="showValues">false</ac:parameter>
+  <ac:parameter ac:name="colors">#829A3D,#B83939</ac:parameter>
+  <ac:parameter ac:name="dataDisplay">after</ac:parameter>
+  <ac:parameter ac:name="xLabel">Date</ac:parameter>
+  <ac:parameter ac:name="yLabel">Jobs</ac:parameter>
+  <ac:rich-text-body>
+    <table>
+      <tbody>
+        {header_row}
+        {baseline_row}
+        {jobs_row}
+      </tbody>
+    </table>
+  </ac:rich-text-body>
+</ac:structured-macro>
+"""
+
+def generate_daily_total_chart(df: pd.DataFrame, baseline: int) -> str:
+    """Generate daily totals bar chart"""
+    daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
+    
     if daily.empty:
         return "<p>No daily data.</p>"
     
-    # Convert to the format needed for the chart
-    date_columns = {}
-    for _, row in daily.iterrows():
-        # Use DD-MM format for better readability and to avoid *** display
-        date_str = row['DATE'].strftime('%d-%m')  # FIXED: Changed to DD-MM format
-        total_jobs = int(row['TOTAL_JOBS'])
-        date_columns[date_str] = total_jobs
-    
     # Create header row
     header_row = "<tr><th>Series</th>"
-    for date in date_columns.keys():
-        header_row += f"<th>{date}</th>"
+    for _, row in daily.iterrows():
+        date_str = row['DATE'].strftime('%d-%m')
+        header_row += f"<th>{date_str}</th>"
     header_row += "</tr>"
     
     # Create data row
     data_row = "<tr><td>Total Jobs</td>"
-    for value in date_columns.values():
-        data_row += f"<td>{value}</td>"
+    for _, row in daily.iterrows():
+        data_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
     data_row += "</tr>"
     
     table_html = f"""<table><tbody>{header_row}{data_row}</tbody></table>"""
     
-    chart = f"""
-<h3>{title}</h3>
+    return f"""
+<h3>Daily Total Jobs</h3>
 <ac:structured-macro ac:name="chart">
   <ac:parameter ac:name="type">bar</ac:parameter>
-  <ac:parameter ac:name="title">{title}</ac:parameter>
+  <ac:parameter ac:name="title">Daily Total Jobs</ac:parameter>
   <ac:parameter ac:name="width">1200</ac:parameter>
   <ac:parameter ac:name="height">600</ac:parameter>
   <ac:parameter ac:name="3D">true</ac:parameter>
@@ -433,17 +473,11 @@ def generate_daily_total_single_series(df: pd.DataFrame,
   </ac:rich-text-body>
 </ac:structured-macro>
 """
-    return chart
 
-def generate_country_summary_chart(df: pd.DataFrame,
-                                  title: str = "Total Jobs by Country") -> str:
-    """
-    Generate bar chart showing total jobs per country with summary table.
-    FIXED: Detects REGION column from your multi-country CSV processor
-    """
-    # Check if we have country data - try multiple possible column names
+def generate_country_summary_chart(df: pd.DataFrame) -> str:
+    """Generate bar chart showing total jobs per country"""
     country_col = None
-    possible_country_cols = ['REGION', 'Country', 'country', 'COUNTRY', 'Region', 'region']
+    possible_country_cols = ['COUNTRY', 'Country', 'country', 'REGION', 'Region', 'region']
     
     for col in possible_country_cols:
         if col in df.columns:
@@ -453,7 +487,6 @@ def generate_country_summary_chart(df: pd.DataFrame,
     if country_col is None:
         return "<p>No country data available for country summary chart.</p>"
     
-    # Group by country and sum total jobs
     country_totals = df.groupby(country_col, as_index=False)['TOTAL_JOBS'].sum()
     country_totals = country_totals.sort_values('TOTAL_JOBS', ascending=False)
     
@@ -488,7 +521,7 @@ def generate_country_summary_chart(df: pd.DataFrame,
     
     table_html += "</tbody></table>"
     
-    # Create chart table data
+    # Create chart data
     chart_header = "<tr><th>Country/Market</th><th>Task Count</th></tr>"
     chart_rows = []
     for _, row in country_totals.iterrows():
@@ -499,10 +532,10 @@ def generate_country_summary_chart(df: pd.DataFrame,
     chart_table_html = f"""<table><tbody>{chart_header}{''.join(chart_rows)}</tbody></table>"""
     
     chart = f"""
-<h3>{title}</h3>
+<h3>Total Jobs by Country</h3>
 <ac:structured-macro ac:name="chart">
   <ac:parameter ac:name="type">bar</ac:parameter>
-  <ac:parameter ac:name="title">{title}</ac:parameter>
+  <ac:parameter ac:name="title">Total Jobs by Country</ac:parameter>
   <ac:parameter ac:name="width">1200</ac:parameter>
   <ac:parameter ac:name="height">500</ac:parameter>
   <ac:parameter ac:name="3D">true</ac:parameter>
@@ -561,11 +594,8 @@ def get_page_info(session: requests.Session, config: Dict) -> Tuple[Optional[str
         logging.error(f"Error getting page info: {e}")
         return None, None
 
-def create_or_update_page(session: requests.Session,
-                          config: Dict,
-                          content: str,
-                          page_id: Optional[str] = None,
-                          version: Optional[int] = None) -> bool:
+def create_or_update_page(session: requests.Session, config: Dict, content: str,
+                          page_id: Optional[str] = None, version: Optional[int] = None) -> bool:
     try:
         base_url = config['CONFLUENCE_URL'].rstrip('/')
         if not base_url.endswith('/content'):
@@ -620,7 +650,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
                           test_mode=False,
                           skip_actual_upload: bool = False) -> bool:
     """
-    Publish report to Confluence with improved config file handling.
+    Publish report to Confluence with improved daily/monthly handling.
     """
     try:
         # Check report file exists
@@ -643,7 +673,9 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
             config['PAGE_TITLE'] += "-TEST"
 
-        monthly = _is_monthly_run(config)
+        # Determine if this is monthly or daily run
+        is_monthly = _is_monthly_run(config)
+        is_daily = not is_monthly
         baseline = config.get('BASELINE', 1899206)
 
         # Load and sanitize data
@@ -666,23 +698,39 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
                 logging.error("Connection test failed.")
                 return False
 
-        # Generate content sections
-        peaks_section = generate_global_peaks_section(df, baseline) if monthly else ""
-        jobs_data_table = generate_jobs_data_table(df, baseline) if monthly else ""
-        daily_chart = generate_daily_total_single_series(df, baseline, "Daily Total Jobs")
-        country_chart = generate_country_summary_chart(df, "Total Jobs by Country")
+        # Generate content sections based on mode
+        if is_daily:
+            # Daily report - YTD peaks
+            title_suffix = " - YTD"
+            daily_data = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+            peaks = compute_top_peaks_ytd(daily_data, 4)
+            peaks_chart_title = "4th Peak of YTD"
+        else:
+            # Monthly report - current month peaks
+            title_suffix = ""
+            daily_data = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
+            peaks = compute_top_peaks_monthly(daily_data, 4)
+            latest_month = peaks['DATE'].dt.strftime('%B').iloc[0] if not peaks.empty else "Current Month"
+            peaks_chart_title = f"Top 4 Peaks of {latest_month}"
+        
+        # Generate all content sections
+        jobs_data_table = generate_jobs_data_table(df, baseline, is_daily)
+        peaks_chart = generate_peaks_chart(peaks, baseline, peaks_chart_title) if not peaks.empty else ""
+        monthly_usage_chart = generate_monthly_usage_chart(df, baseline)
+        daily_chart = generate_daily_total_chart(df, baseline)
+        country_chart = generate_country_summary_chart(df)
 
         # Create page content
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         user = os.environ.get('USER', 'automated')
         
         content = f"""
-<h1>Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
+<h1>Task Usage Report{title_suffix}{' - TEST DATA' if test_mode else ''}</h1>
 <p><strong>Last updated:</strong> {timestamp}</p>
 <p><strong>Generated by:</strong> {user}</p>
-<h2>Overall Monthly Task Usage Report</h2>
+{peaks_chart}
 {jobs_data_table}
-{peaks_section}
+{monthly_usage_chart}
 {daily_chart}
 {country_chart}
 <hr />
@@ -703,134 +751,3 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         import traceback
         logging.error(traceback.format_exc())
         return False
-
-# =============================================================
-# Multi-Country Publishing
-# =============================================================
-
-def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
-                                test_mode: bool = False,
-                                skip_actual_upload: bool = False) -> bool:
-    """
-    Publish multi-country report to Confluence.
-    """
-    try:
-        # Find and load config
-        cfg_path = find_config_file(test_mode)
-        if not cfg_path:
-            logging.error("Could not find config file for multi-country")
-            return False
-        
-        config = load_config(cfg_path)
-        if not config:
-            logging.error("Failed to load config for multi-country")
-            return False
-        
-        if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
-            config['PAGE_TITLE'] += "-TEST"
-
-        monthly = _is_monthly_run(config)
-        baseline = config.get('BASELINE', 1899206)
-
-        # Process all country files
-        frames = []
-        for ctry, path in report_files:
-            if not os.path.exists(path):
-                logging.warning(f"Missing report for {ctry}: {path}")
-                continue
-            df = pd.read_csv(path)
-            if 'DATE' in df.columns:
-                df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
-            df = sanitize_total_jobs(df, preferred_col=config.get('JOB_COLUMN'))
-            df['COUNTRY'] = ctry
-            frames.append(df)
-
-        if not frames:
-            logging.error("No country data to publish.")
-            return False
-
-        all_df = pd.concat(frames, ignore_index=True)
-
-        # Create session if not skipping
-        session = None
-        if not skip_actual_upload:
-            session = create_session(config)
-            if not session:
-                return False
-            if not test_connection(session, config):
-                logging.error("Connection test failed.")
-                return False
-
-        # Generate content
-        global_peaks = generate_global_peaks_section(all_df, baseline) if monthly else ""
-        jobs_data_table = generate_jobs_data_table(all_df, baseline) if monthly else ""
-        global_daily = generate_daily_total_single_series(all_df, baseline, "Daily Total Jobs (All Countries)")
-        country_chart = generate_country_summary_chart(all_df, "Total Jobs by Country")
-
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        user = os.environ.get('USER', 'automated')
-        
-        content = f"""
-<h1>Multi-Country Task Usage Report{' - TEST DATA' if test_mode else ''}</h1>
-<p><strong>Last updated:</strong> {timestamp}</p>
-<p><strong>Generated by:</strong> {user}</p>
-<h2>Overall Monthly Task Usage Report</h2>
-{jobs_data_table}
-{global_peaks}
-{global_daily}
-{country_chart}
-<hr />
-<p><em>Note: This report shows aggregated data from multiple countries{' (TEST MODE)' if test_mode else ''}.</em></p>
-"""
-
-        if skip_actual_upload:
-            logging.info("Simulation only (multi-country).")
-            return True
-
-        page_id, version = get_page_info(session, config)
-        return create_or_update_page(session, config, content, page_id, version)
-
-    except Exception as e:
-        logging.error(f"Error in multi-country publish: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-        return False
-
-# =============================================================
-# CLI Entry Point
-# =============================================================
-
-if __name__ == "__main__":
-    import argparse
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    
-    p = argparse.ArgumentParser(description="Confluence Publisher")
-    p.add_argument("--file", help="Single report CSV to publish")
-    p.add_argument("--multi", nargs="*", help="List of COUNTRY=path/to/file.csv")
-    p.add_argument("--simulate", action="store_true", help="Skip actual upload")
-    p.add_argument("--test", action="store_true", help="Test mode")
-    args = p.parse_args()
-    
-    if args.file:
-        ok = publish_to_confluence(
-            report_file=args.file,
-            test_mode=args.test,
-            skip_actual_upload=args.simulate
-        )
-        print("Single publish:", "OK" if ok else "FAILED")
-    elif args.multi:
-        pairs = []
-        for item in args.multi:
-            if "=" not in item:
-                print(f"Invalid format: {item}")
-                continue
-            ctry, path = item.split("=", 1)
-            pairs.append((ctry.strip(), path.strip()))
-        ok = publish_to_confluence_multi(
-            report_files=pairs,
-            test_mode=args.test,
-            skip_actual_upload=args.simulate
-        )
-        print("Multi publish:", "OK" if ok else "FAILED")
-    else:
-        p.print_help()
