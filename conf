@@ -29,7 +29,7 @@ def _is_monthly_run(config: Dict) -> bool:
     title = config.get('PAGE_TITLE', '')
     if title.endswith('_daily'):
         return False
-    if re.search(r'\s-\s(' + '|'.join(MONTH_NAMES) + r'), title):
+    if re.search(r'\s-\s(' + '|'.join(MONTH_NAMES) + r')$', title):
         return True
     return True  # default behave as monthly
 
@@ -301,7 +301,7 @@ def generate_jobs_data_table(df: pd.DataFrame, baseline: int, is_daily: bool = F
             var_text = f"{variation:,}"
         elif variation < 0:
             var_style = 'style="background-color:#FFB6C1;"'  # Light red  
-            var_text = f"{abs(variation):,}"  # Show absolute value for display
+            var_text = f"{variation:,}"  # Keep negative sign
         else:
             var_style = ''
             var_text = "0"
