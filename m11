@@ -413,7 +413,9 @@ def process_csv_file_countries(output_dir, target_month, test_mode=False, is_dai
                 'success': False,
                 'source': 'csv_file'
             })
-    # (Continuing from line 600 of main.py...)
+    
+    return results
+
 
 def process_single_csv_country_file(source_file, output_file, country_name, target_month, is_daily_mode=False):
     """
@@ -1217,5 +1219,4 @@ def main():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    sys.exit(main())    return results
-
+    sys.exit(main())
