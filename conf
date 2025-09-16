@@ -10,7 +10,7 @@ import re
 from typing import Tuple, Optional, Dict, List
 
 # -------------------------------------------------------------
-# Confluence Publisher - Complete Final Version with Fixes
+# Confluence Publisher - Complete Final Version with Daily/Monthly Fixes
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -219,7 +219,7 @@ def sanitize_total_jobs(df: pd.DataFrame,
     return df
 
 # =============================================================
-# Peak Calculation - UPDATED FOR DAILY/MONTHLY
+# Peak Calculation
 # =============================================================
 
 def latest_year_month(daily_df: pd.DataFrame) -> Tuple[int, int]:
@@ -271,7 +271,7 @@ def compute_top_peaks_ytd(daily_df: pd.DataFrame, top_n: int = 4) -> pd.DataFram
     return peaks[['DATE', 'TOTAL_JOBS']].sort_values('DATE')
 
 # =============================================================
-# Chart Builders - UPDATED WITH FIXES
+# Chart Builders
 # =============================================================
 
 def peaks_transposed_chart(peaks_df: pd.DataFrame,
@@ -358,9 +358,6 @@ def peaks_detail_table(peaks_df: pd.DataFrame,
 def generate_jobs_data_table(df: pd.DataFrame, baseline: int, is_daily: bool = False) -> str:
     """
     Generate the Jobs Data table showing ONLY TOP 4 PEAKS with Date, Baseline, Total Jobs, and Variation.
-    FIXED: Variance = Baseline - Total Jobs (positive when baseline is higher)
-    For daily: YTD top 4 peaks
-    For monthly: Current month top 4 peaks
     """
     # Group by date and sum total jobs
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum()
@@ -396,14 +393,14 @@ def generate_jobs_data_table(df: pd.DataFrame, baseline: int, is_daily: bool = F
     for _, row in top_4_peaks.iterrows():
         date_str = row['DATE'].strftime('%m/%d/%Y')
         total_jobs = int(row['TOTAL_JOBS'])
-        variation = baseline - total_jobs  # FIXED: Baseline - Total Jobs as requested
+        variation = baseline - total_jobs
         
-        # Color coding logic - positive (baseline higher) = green, negative (total jobs higher) = red
+        # Color coding logic
         if variation > 0:
-            var_style = 'style="background-color:#90EE90;"'  # Light green for positive
+            var_style = 'style="background-color:#90EE90;"'
             var_text = f"{variation:,}"
         elif variation < 0:
-            var_style = 'style="background-color:#FFB6C1;"'  # Light red for negative
+            var_style = 'style="background-color:#FFB6C1;"'
             var_text = f"{variation:,}"
         else:
             var_style = ''
@@ -446,7 +443,6 @@ def generate_global_peaks_section(df: pd.DataFrame,
 def generate_monthly_usage_chart(df: pd.DataFrame, baseline: int) -> str:
     """
     Generate Overall Monthly Task Usage Report line chart
-    Shows trend over time with baseline comparison
     """
     # Group by date and sum
     daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
@@ -499,12 +495,9 @@ def generate_monthly_usage_chart(df: pd.DataFrame, baseline: int) -> str:
 </ac:structured-macro>
 """
 
-def generate_daily_total_single_series(df: pd.DataFrame,
-                                       baseline: int,
-                                       title: str = "Daily Total Jobs",
-                                       is_daily: bool = False) -> str:
+def generate_monthly_country_breakdown_chart(df: pd.DataFrame) -> str:
     """
-    Generate daily totals chart - stacked by country for daily mode, simple for monthly mode
+    Generate monthly stacked bar chart broken down by country (like your screenshot)
     """
     # Check if we have country data
     country_col = None
@@ -515,101 +508,120 @@ def generate_daily_total_single_series(df: pd.DataFrame,
             country_col = col
             break
     
-    # For daily mode with country data, create stacked chart
-    if is_daily and country_col:
-        # Create pivot table for country breakdown
-        pivot_df = df.pivot_table(
-            values='TOTAL_JOBS',
-            index='DATE',
-            columns=country_col,
-            aggfunc='sum',
-            fill_value=0
-        ).reset_index()
-        
-        if pivot_df.empty:
-            return "<p>No daily data by country.</p>"
-        
-        # Sort by date
-        pivot_df = pivot_df.sort_values('DATE')
-        
-        # Get list of countries
-        countries = [col for col in pivot_df.columns if col != 'DATE']
-        
-        # Build the header row with dates
-        header_row = "<tr><th>Country</th>"
-        for _, row in pivot_df.iterrows():
-            date_str = row['DATE'].strftime('%m/%d')
-            header_row += f"<th>{date_str}</th>"
-        header_row += "</tr>"
-        
-        # Build data rows for each country
-        data_rows = []
+    if country_col is None:
+        return ""
+    
+    # Add month columns
+    df_copy = df.copy()
+    df_copy['Month'] = df_copy['DATE'].dt.strftime('%b')
+    df_copy['MonthNum'] = df_copy['DATE'].dt.month
+    df_copy['Year'] = df_copy['DATE'].dt.year
+    
+    # Create pivot table for monthly breakdown
+    monthly_pivot = df_copy.pivot_table(
+        values='TOTAL_JOBS',
+        index=['Year', 'MonthNum', 'Month'],
+        columns=country_col,
+        aggfunc='sum',
+        fill_value=0
+    ).reset_index()
+    
+    # Sort by year and month
+    monthly_pivot = monthly_pivot.sort_values(['Year', 'MonthNum'])
+    
+    # Get list of countries
+    countries = sorted([col for col in monthly_pivot.columns if col not in ['Year', 'MonthNum', 'Month']])
+    
+    # Build chart data
+    header_row = "<tr><th>Country</th>"
+    for _, row in monthly_pivot.iterrows():
+        header_row += f"<th>{row['Month']}</th>"
+    header_row += "</tr>"
+    
+    # Add data rows for each country
+    data_rows = []
+    for country in countries:
+        country_row = f"<tr><td>Sum of {country}</td>"
+        for _, row in monthly_pivot.iterrows():
+            value = int(row[country]) if country in row and pd.notna(row[country]) else 0
+            country_row += f"<td>{value}</td>"
+        country_row += "</tr>"
+        data_rows.append(country_row)
+    
+    table_html = f"""<table><tbody>{header_row}{''.join(data_rows)}</tbody></table>"""
+    
+    # Also create summary table
+    summary_html = """
+<h3>Monthly Summary by Country</h3>
+<table class='wrapped'>
+<tbody>
+<tr>
+    <th>Months</th>
+"""
+    
+    for country in countries:
+        summary_html += f"<th>Sum of {country}</th>"
+    summary_html += "</tr>"
+    
+    for _, row in monthly_pivot.iterrows():
+        summary_html += f"<tr><td>{row['Month']}</td>"
         for country in countries:
-            country_row = f"<tr><td>Sum of {country}</td>"
-            for _, row in pivot_df.iterrows():
-                value = int(row[country]) if country in row and pd.notna(row[country]) else 0
-                country_row += f"<td>{value}</td>"
-            country_row += "</tr>"
-            data_rows.append(country_row)
-        
-        table_html = f"""<table><tbody>{header_row}{''.join(data_rows)}</tbody></table>"""
-        
-        # Update title for country breakdown
-        title = "Daily Jobs by Country"
-        
-        # Generate stacked bar chart
-        chart = f"""
-<h3>{title}</h3>
+            value = int(row[country]) if country in row and pd.notna(row[country]) else 0
+            summary_html += f"<td>{value:,}</td>"
+        summary_html += "</tr>"
+    
+    summary_html += "</tbody></table>"
+    
+    # Generate stacked bar chart
+    chart_html = f"""
+<h3>Monthly Jobs by Country</h3>
 <ac:structured-macro ac:name="chart">
   <ac:parameter ac:name="type">bar</ac:parameter>
-  <ac:parameter ac:name="title">{title}</ac:parameter>
+  <ac:parameter ac:name="title">Monthly Jobs by Country</ac:parameter>
   <ac:parameter ac:name="width">1400</ac:parameter>
   <ac:parameter ac:name="height">700</ac:parameter>
   <ac:parameter ac:name="3D">true</ac:parameter>
   <ac:parameter ac:name="legend">true</ac:parameter>
   <ac:parameter ac:name="orientation">vertical</ac:parameter>
-  <ac:parameter ac:name="labelAngle">90</ac:parameter>
   <ac:parameter ac:name="stacked">true</ac:parameter>
-  <ac:parameter ac:name="showValues">false</ac:parameter>
-  <ac:parameter ac:name="xaxisLabel">Date</ac:parameter>
+  <ac:parameter ac:name="showValues">true</ac:parameter>
+  <ac:parameter ac:name="xaxisLabel">Month</ac:parameter>
   <ac:parameter ac:name="yaxisLabel">Jobs</ac:parameter>
   <ac:parameter ac:name="dataDisplay">after</ac:parameter>
-  <ac:parameter ac:name="fontSize">10</ac:parameter>
   <ac:rich-text-body>
     {table_html}
   </ac:rich-text-body>
 </ac:structured-macro>
 """
-        return chart
     
-    else:
-        # Simple single series chart for monthly mode or no country data
-        daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
-        if daily.empty:
-            return "<p>No daily data.</p>"
-        
-        # Convert to the format needed for the chart
-        date_columns = {}
-        for _, row in daily.iterrows():
-            date_str = row['DATE'].strftime('%d-%m')
-            total_jobs = int(row['TOTAL_JOBS'])
-            date_columns[date_str] = total_jobs
-        
-        # Create header row
-        header_row = "<tr><th>Series</th>"
-        for date in date_columns.keys():
-            header_row += f"<th>{date}</th>"
-        header_row += "</tr>"
-        
-        # Create data row
-        data_row = "<tr><td>Total Jobs</td>"
-        for value in date_columns.values():
-            data_row += f"<td>{value}</td>"
-        data_row += "</tr>"
-        
-        table_html = f"""<table><tbody>{header_row}{data_row}</tbody></table>"""
-        
-        chart = f"""
+    return summary_html + chart_html
+
+def generate_daily_total_single_series(df: pd.DataFrame,
+                                       baseline: int,
+                                       title: str = "Daily Total Jobs") -> str:
+    """
+    Generate daily totals chart - simple for monthly mode
+    """
+    daily = df.groupby('DATE', as_index=False)['TOTAL_JOBS'].sum().sort_values('DATE')
+    if daily.empty:
+        return "<p>No daily data.</p>"
+    
+    # Create header row
+    header_row = "<tr><th>Series</th>"
+    for _, row in daily.iterrows():
+        date_str = row['DATE'].strftime('%d-%m')
+        header_row += f"<th>{date_str}</th>"
+    header_row += "</tr>"
+    
+    # Create data row
+    data_row = "<tr><td>Total Jobs</td>"
+    for _, row in daily.iterrows():
+        data_row += f"<td>{int(row['TOTAL_JOBS'])}</td>"
+    data_row += "</tr>"
+    
+    table_html = f"""<table><tbody>{header_row}{data_row}</tbody></table>"""
+    
+    chart = f"""
 <h3>{title}</h3>
 <ac:structured-macro ac:name="chart">
   <ac:parameter ac:name="type">bar</ac:parameter>
@@ -632,77 +644,14 @@ def generate_daily_total_single_series(df: pd.DataFrame,
   </ac:rich-text-body>
 </ac:structured-macro>
 """
-        return chart
-
-def generate_monthly_country_summary_table(df: pd.DataFrame) -> str:
-    """
-    Generate a summary table showing monthly totals by country
-    Similar to the table shown in the screenshot
-    """
-    # Check if we have country data
-    country_col = None
-    possible_country_cols = ['COUNTRY', 'Country', 'country', 'REGION', 'Region', 'region']
-    
-    for col in possible_country_cols:
-        if col in df.columns:
-            country_col = col
-            break
-    
-    if country_col is None:
-        return ""
-    
-    # Add month column
-    df_copy = df.copy()
-    df_copy['Month'] = df_copy['DATE'].dt.strftime('%b')
-    df_copy['MonthNum'] = df_copy['DATE'].dt.month
-    df_copy['Year'] = df_copy['DATE'].dt.year
-    
-    # Create pivot table for monthly summary
-    monthly_pivot = df_copy.pivot_table(
-        values='TOTAL_JOBS',
-        index=['Year', 'MonthNum', 'Month'],
-        columns=country_col,
-        aggfunc='sum',
-        fill_value=0
-    ).reset_index()
-    
-    # Sort by year and month
-    monthly_pivot = monthly_pivot.sort_values(['Year', 'MonthNum'])
-    
-    # Get list of countries sorted alphabetically
-    countries = sorted([col for col in monthly_pivot.columns if col not in ['Year', 'MonthNum', 'Month']])
-    
-    # Build the HTML table
-    html = """
-<h3>Monthly Summary by Country</h3>
-<table class='wrapped'>
-<tbody>
-<tr>
-    <th>Months</th>
-"""
-    
-    # Add country headers
-    for country in countries:
-        html += f"<th>Sum of {country}</th>"
-    html += "</tr>"
-    
-    # Add data rows
-    for _, row in monthly_pivot.iterrows():
-        html += f"<tr><td>{row['Month']}</td>"
-        for country in countries:
-            value = int(row[country]) if country in row and pd.notna(row[country]) else 0
-            html += f"<td>{value:,}</td>"
-        html += "</tr>"
-    
-    html += "</tbody></table>"
-    return html
+    return chart
 
 def generate_country_summary_chart(df: pd.DataFrame,
                                   title: str = "Total Jobs by Country") -> str:
     """
     Generate bar chart showing total jobs per country with summary table.
     """
-    # Check if we have country data - try multiple possible column names
+    # Check if we have country data
     country_col = None
     possible_country_cols = ['COUNTRY', 'Country', 'country', 'REGION', 'Region', 'region']
     
@@ -874,7 +823,7 @@ def test_connection(session: requests.Session, config: Dict) -> bool:
         return False
 
 # =============================================================
-# Main Publish Function - UPDATED
+# Main Publish Function
 # =============================================================
 
 def publish_to_confluence(report_file='task_usage_report_by_region.csv',
@@ -908,6 +857,9 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         is_daily = not monthly
         baseline = config.get('BASELINE', 1899206)
 
+        logging.info(f"Running in {'DAILY' if is_daily else 'MONTHLY'} mode")
+        logging.info(f"Page title: {config['PAGE_TITLE']}")
+
         # Load and sanitize data
         df, ok = load_csv_data(report_file)
         if not ok:
@@ -928,18 +880,24 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
                 logging.error("Connection test failed.")
                 return False
 
-        # Generate content sections - UPDATED FOR DAILY/MONTHLY
-        peaks_section = generate_global_peaks_section(df, baseline, is_daily=is_daily) if monthly or is_daily else ""
+        # Generate content sections
+        peaks_section = generate_global_peaks_section(df, baseline, is_daily=is_daily)
         jobs_data_table = generate_jobs_data_table(df, baseline, is_daily=is_daily)
         monthly_usage_chart = generate_monthly_usage_chart(df, baseline)
         
-        # For daily mode, show country breakdown chart and monthly summary table
+        # For daily mode, show monthly country breakdown chart and table
         if is_daily:
-            daily_chart = generate_daily_total_single_series(df, baseline, "Daily Jobs by Country", is_daily=True)
-            monthly_summary_table = generate_monthly_country_summary_table(df)
+            logging.info("Generating daily mode charts with country breakdown")
+            monthly_country_chart = generate_monthly_country_breakdown_chart(df)
         else:
-            daily_chart = generate_daily_total_single_series(df, baseline, "Daily Total Jobs", is_daily=False)
-            monthly_summary_table = ""
+            logging.info("Generating monthly mode charts")
+            monthly_country_chart = ""
+            
+        # Simple daily chart only for monthly mode
+        if not is_daily:
+            daily_chart = generate_daily_total_single_series(df, baseline, "Daily Total Jobs")
+        else:
+            daily_chart = ""
             
         country_chart = generate_country_summary_chart(df, "Total Jobs by Country")
 
@@ -957,7 +915,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
 {jobs_data_table}
 {peaks_section}
 {monthly_usage_chart}
-{monthly_summary_table}
+{monthly_country_chart}
 {daily_chart}
 {country_chart}
 <hr />
@@ -1037,18 +995,21 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
                 logging.error("Connection test failed.")
                 return False
 
-        # Generate content - UPDATED FOR DAILY/MONTHLY
-        global_peaks = generate_global_peaks_section(all_df, baseline, is_daily=is_daily) if monthly or is_daily else ""
+        # Generate content
+        global_peaks = generate_global_peaks_section(all_df, baseline, is_daily=is_daily)
         jobs_data_table = generate_jobs_data_table(all_df, baseline, is_daily=is_daily)
         monthly_usage_chart = generate_monthly_usage_chart(all_df, baseline)
         
         # For daily mode, show country breakdown
         if is_daily:
-            global_daily = generate_daily_total_single_series(all_df, baseline, "Daily Jobs by Country (All Countries)", is_daily=True)
-            monthly_summary_table = generate_monthly_country_summary_table(all_df)
+            monthly_country_chart = generate_monthly_country_breakdown_chart(all_df)
         else:
-            global_daily = generate_daily_total_single_series(all_df, baseline, "Daily Total Jobs (All Countries)", is_daily=False)
-            monthly_summary_table = ""
+            monthly_country_chart = ""
+            
+        if not is_daily:
+            global_daily = generate_daily_total_single_series(all_df, baseline, "Daily Total Jobs (All Countries)")
+        else:
+            global_daily = ""
             
         country_chart = generate_country_summary_chart(all_df, "Total Jobs by Country")
 
@@ -1065,7 +1026,7 @@ def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
 {jobs_data_table}
 {global_peaks}
 {monthly_usage_chart}
-{monthly_summary_table}
+{monthly_country_chart}
 {global_daily}
 {country_chart}
 <hr />
