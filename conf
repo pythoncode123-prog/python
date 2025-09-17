@@ -10,7 +10,7 @@ import re
 from typing import Tuple, Optional, Dict, List
 
 # -------------------------------------------------------------
-# Confluence Publisher - FIXED: No legacy detection when mode is explicit
+# Confluence Publisher - FIXED: Uses environment variable for mode
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -866,22 +866,22 @@ def test_connection(session: requests.Session, config: Dict) -> bool:
         return False
 
 # =============================================================
-# Main Publish Function - FIXED: NO LEGACY DETECTION
+# Main Publish Function - FIXED: Uses environment variable
 # =============================================================
 
 def publish_to_confluence(report_file='task_usage_report_by_region.csv',
                           test_mode=False,
                           skip_actual_upload: bool = False,
-                          is_daily_mode: bool = False) -> bool:
+                          is_daily_mode: bool = None) -> bool:
     """
     Publish report to Confluence with explicit mode control.
-    FIXED: Always use explicit mode, never detect from title.
+    FIXED: Always check environment variable for mode when not explicitly passed
     
     Args:
         report_file: Path to the CSV report file
         test_mode: If True, append "-TEST" to page title
         skip_actual_upload: If True, skip actual upload
-        is_daily_mode: If True, use YTD mode; if False, use monthly mode
+        is_daily_mode: If True, use YTD mode; if False, use monthly mode; if None, check env var
     """
     try:
         # Check report file exists
@@ -904,10 +904,18 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
             config['PAGE_TITLE'] += "-TEST"
 
-        # FIXED: Always use the explicit mode passed as parameter
-        # NO LEGACY DETECTION FROM TITLE
-        is_daily = is_daily_mode
-        logging.info(f"Using explicit mode from parameter: {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
+        # CRITICAL FIX: Always check environment variable for mode
+        # This ensures mode is consistent even when called from workflow.py
+        if is_daily_mode is not None:
+            # If explicitly passed, use that
+            is_daily = is_daily_mode
+            logging.info(f"Mode explicitly passed as parameter: {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
+        else:
+            # Check environment variable - this is the key fix!
+            env_mode = os.environ.get('CONFLUENCE_REPORT_MODE', 'MONTHLY')
+            is_daily = (env_mode == 'DAILY')
+            logging.info(f"Mode from environment variable CONFLUENCE_REPORT_MODE: {env_mode}")
+            logging.info(f"Using mode: {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
         
         baseline = config.get('BASELINE', 1899206)
 
