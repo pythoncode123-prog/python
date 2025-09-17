@@ -10,7 +10,7 @@ import re
 from typing import Tuple, Optional, Dict, List
 
 # -------------------------------------------------------------
-# Confluence Publisher - Fixed to use explicit mode parameter
+# Confluence Publisher - FIXED: No legacy detection when mode is explicit
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -23,32 +23,6 @@ MONTH_NAMES = (
 # =============================================================
 # Configuration / Auth
 # =============================================================
-
-def _is_monthly_run(config: Dict) -> bool:
-    """
-    LEGACY: Determine if this is a monthly or daily (YTD) run based on page title.
-    Only used when is_daily_mode parameter is not provided.
-    """
-    title = config.get('PAGE_TITLE', '')
-    
-    # Check for YTD mode
-    if title.endswith(' - YTD'):
-        logging.info(f"Legacy detection: YTD mode from title: {title}")
-        return False  # This is daily/YTD mode
-    
-    # Legacy check for _daily suffix
-    if title.endswith('_daily'):
-        logging.info(f"Legacy detection: daily mode from _daily suffix: {title}")
-        return False
-    
-    # Check for month names
-    if re.search(r'\s-\s(' + '|'.join(MONTH_NAMES) + r')$', title):
-        logging.info(f"Legacy detection: monthly mode from month name: {title}")
-        return True
-    
-    # Default to monthly if no clear indicator
-    logging.info(f"Legacy detection: defaulting to monthly mode for title: {title}")
-    return True
 
 def find_config_file(test_mode: bool = False) -> Optional[str]:
     """
@@ -892,21 +866,22 @@ def test_connection(session: requests.Session, config: Dict) -> bool:
         return False
 
 # =============================================================
-# Main Publish Function - UPDATED WITH EXPLICIT MODE
+# Main Publish Function - FIXED: NO LEGACY DETECTION
 # =============================================================
 
 def publish_to_confluence(report_file='task_usage_report_by_region.csv',
                           test_mode=False,
                           skip_actual_upload: bool = False,
-                          is_daily_mode: bool = None) -> bool:
+                          is_daily_mode: bool = False) -> bool:
     """
     Publish report to Confluence with explicit mode control.
+    FIXED: Always use explicit mode, never detect from title.
     
     Args:
         report_file: Path to the CSV report file
         test_mode: If True, append "-TEST" to page title
         skip_actual_upload: If True, skip actual upload
-        is_daily_mode: If True, use YTD mode; if False, use monthly mode; if None, detect from title (legacy)
+        is_daily_mode: If True, use YTD mode; if False, use monthly mode
     """
     try:
         # Check report file exists
@@ -929,15 +904,10 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
             config['PAGE_TITLE'] += "-TEST"
 
-        # Determine mode from parameter if provided, otherwise detect from title (legacy)
-        if is_daily_mode is not None:
-            is_daily = is_daily_mode
-            logging.info(f"Mode explicitly set: {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
-        else:
-            # Legacy detection from title
-            monthly = _is_monthly_run(config)
-            is_daily = not monthly
-            logging.info(f"Mode detected from title (legacy): {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
+        # FIXED: Always use the explicit mode passed as parameter
+        # NO LEGACY DETECTION FROM TITLE
+        is_daily = is_daily_mode
+        logging.info(f"Using explicit mode from parameter: {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
         
         baseline = config.get('BASELINE', 1899206)
 
@@ -1031,126 +1001,6 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         return False
 
 # =============================================================
-# Multi-Country Publishing
-# =============================================================
-
-def publish_to_confluence_multi(report_files: List[Tuple[str, str]],
-                                test_mode: bool = False,
-                                skip_actual_upload: bool = False) -> bool:
-    """
-    Publish multi-country report to Confluence.
-    Note: This is legacy and doesn't support explicit mode - will detect from title
-    """
-    try:
-        # Find and load config
-        cfg_path = find_config_file(test_mode)
-        if not cfg_path:
-            logging.error("Could not find config file for multi-country")
-            return False
-        
-        config = load_config(cfg_path)
-        if not config:
-            logging.error("Failed to load config for multi-country")
-            return False
-        
-        if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
-            config['PAGE_TITLE'] += "-TEST"
-
-        monthly = _is_monthly_run(config)
-        is_daily = not monthly
-        baseline = config.get('BASELINE', 1899206)
-
-        logging.info("="*60)
-        logging.info(f"Publishing Multi-Country Report to Confluence")
-        logging.info(f"Mode: {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
-        logging.info(f"Page title: {config['PAGE_TITLE']}")
-        logging.info("="*60)
-
-        # Process all country files
-        frames = []
-        for ctry, path in report_files:
-            if not os.path.exists(path):
-                logging.warning(f"Missing report for {ctry}: {path}")
-                continue
-            df = pd.read_csv(path)
-            if 'DATE' in df.columns:
-                df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
-            df = sanitize_total_jobs(df, preferred_col=config.get('JOB_COLUMN'))
-            df['COUNTRY'] = ctry
-            frames.append(df)
-
-        if not frames:
-            logging.error("No country data to publish.")
-            return False
-
-        all_df = pd.concat(frames, ignore_index=True)
-
-        # Create session if not skipping
-        session = None
-        if not skip_actual_upload:
-            session = create_session(config)
-            if not session:
-                return False
-            if not test_connection(session, config):
-                logging.error("Connection test failed.")
-                return False
-
-        # Generate content (all will exclude today's data and use YTD for daily)
-        global_peaks = generate_global_peaks_section(all_df, baseline, is_daily=is_daily)
-        jobs_data_table = generate_jobs_data_table(all_df, baseline, is_daily=is_daily)
-        monthly_usage_chart = generate_monthly_usage_chart(all_df, baseline)
-        
-        # For daily mode, show country breakdown
-        if is_daily:
-            monthly_country_chart = generate_monthly_country_breakdown_chart(all_df)
-        else:
-            monthly_country_chart = ""
-            
-        if not is_daily:
-            global_daily = generate_daily_total_single_series(all_df, baseline, "Daily Total Jobs (All Countries)")
-        else:
-            global_daily = ""
-            
-        country_chart = generate_country_summary_chart(all_df, "Total Jobs by Country")
-
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        user = os.environ.get('USER', 'automated')
-        yesterday = (datetime.now().date() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
-        
-        title_suffix = " - YTD" if is_daily else ""
-        date_range_desc = "YTD (Year-to-Date)" if is_daily else "Current Month"
-        
-        content = f"""
-<h1>Multi-Country Task Usage Report{title_suffix}{' - TEST DATA' if test_mode else ''}</h1>
-<p><strong>Last updated:</strong> {timestamp}</p>
-<p><strong>Generated by:</strong> {user}</p>
-<p><strong>Data through:</strong> {yesterday} (excludes today)</p>
-<p><strong>Report Mode:</strong> {date_range_desc}</p>
-<h2>Overall Monthly Task Usage Report</h2>
-{jobs_data_table}
-{global_peaks}
-{monthly_usage_chart}
-{monthly_country_chart}
-{global_daily}
-{country_chart}
-<hr />
-<p><em>Note: This report shows aggregated data from multiple countries through {yesterday} in {date_range_desc} mode{' (TEST MODE)' if test_mode else ''}.</em></p>
-"""
-
-        if skip_actual_upload:
-            logging.info("Simulation only (multi-country).")
-            return True
-
-        page_id, version = get_page_info(session, config)
-        return create_or_update_page(session, config, content, page_id, version)
-
-    except Exception as e:
-        logging.error(f"Error in multi-country publish: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-        return False
-
-# =============================================================
 # CLI Entry Point
 # =============================================================
 
@@ -1160,15 +1010,14 @@ if __name__ == "__main__":
     
     p = argparse.ArgumentParser(description="Confluence Publisher")
     p.add_argument("--file", help="Single report CSV to publish")
-    p.add_argument("--multi", nargs="*", help="List of COUNTRY=path/to/file.csv")
     p.add_argument("--simulate", action="store_true", help="Skip actual upload")
     p.add_argument("--test", action="store_true", help="Test mode")
     p.add_argument("--daily", action="store_true", help="Force daily/YTD mode")
     p.add_argument("--monthly", action="store_true", help="Force monthly mode")
     args = p.parse_args()
     
-    # Determine mode from command line flags
-    is_daily_mode = None
+    # Determine mode from command line flags - DEFAULT TO MONTHLY IF NOT SPECIFIED
+    is_daily_mode = False  # Default to monthly
     if args.daily:
         is_daily_mode = True
     elif args.monthly:
@@ -1182,21 +1031,5 @@ if __name__ == "__main__":
             is_daily_mode=is_daily_mode
         )
         print("Single publish:", "OK" if ok else "FAILED")
-    elif args.multi:
-        pairs = []
-        for item in args.multi:
-            if "=" not in item:
-                print(f"Invalid format: {item}")
-                continue
-            ctry, path = item.split("=", 1)
-            pairs.append((ctry.strip(), path.strip()))
-        
-        # Note: multi doesn't support explicit mode yet
-        ok = publish_to_confluence_multi(
-            report_files=pairs,
-            test_mode=args.test,
-            skip_actual_upload=args.simulate
-        )
-        print("Multi publish:", "OK" if ok else "FAILED")
     else:
         p.print_help()
