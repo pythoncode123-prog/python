@@ -8,9 +8,10 @@ Key features:
 - Query date range updates preserve the original query formatting (no column tampering)
 - Test mode (--test) uses a predefined test CSV (handled inside workflow)
 - --no-publish skips Confluence upload
-- Multi-country support with simple date-based folder organization
+- Multi-country support with unique date-based folder organization
 - AUTO-DISCOVERY: Automatically detects CSV countries from files matching pattern
 - NO CONFIG MODIFICATION: Page titles are generated at runtime in confluence_publisher
+- UNIQUE FOLDERS: Creates numbered folders for multiple runs per day
 """
 
 import os
@@ -68,6 +69,41 @@ def setup_logging():
             logging.StreamHandler()
         ]
     )
+
+
+# ---------------------------------------------------------------------------
+# Unique Output Directory Creation
+# ---------------------------------------------------------------------------
+
+def get_unique_output_dir():
+    """
+    Create a unique output directory with date and run number.
+    Format: reports/YYYY-MM-DD or reports/YYYY-MM-DD_2, reports/YYYY-MM-DD_3, etc.
+    """
+    base_date = datetime.now().strftime('%Y-%m-%d')
+    base_dir = os.path.join('reports', base_date)
+    
+    # If base directory doesn't exist, use it
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir, exist_ok=True)
+        logging.info(f"Created output directory: {base_dir}")
+        return base_dir
+    
+    # Otherwise, find the next available number
+    counter = 2
+    while counter <= 999:  # Safety limit
+        numbered_dir = f"{base_dir}_{counter}"
+        if not os.path.exists(numbered_dir):
+            os.makedirs(numbered_dir, exist_ok=True)
+            logging.info(f"Created output directory: {numbered_dir} (run #{counter} today)")
+            return numbered_dir
+        counter += 1
+    
+    # Fallback: use timestamp if too many runs
+    timestamp_dir = f"{base_dir}_{datetime.now().strftime('%H%M%S')}"
+    os.makedirs(timestamp_dir, exist_ok=True)
+    logging.info(f"Created output directory with timestamp: {timestamp_dir}")
+    return timestamp_dir
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +259,7 @@ def analyze_csv_file(csv_path):
 
 
 # ---------------------------------------------------------------------------
-# FIXED: CSV Auto-Discovery Functions for YTD mode
+# CSV Auto-Discovery Functions for YTD mode
 # ---------------------------------------------------------------------------
 
 def auto_discover_csv_countries(csv_path, target_month, is_daily_mode=False):
@@ -792,10 +828,8 @@ def run_workflow_multi_enhanced(countries, default_output_csv, execution_timesta
     logging.info(f"Database countries: {[c['name'] for c in countries]}")
     logging.info(f"="*60)
     
-    # Create date-based folder for organization
-    today_folder = datetime.now().strftime('%Y-%m-%d')
-    output_dir = os.path.join('reports', today_folder)
-    os.makedirs(output_dir, exist_ok=True)
+    # Create unique date-based folder for organization
+    output_dir = get_unique_output_dir()
     
     original_cwd = os.getcwd()
     
@@ -943,12 +977,10 @@ def run_workflow_multi(countries, default_output_csv, execution_timestamp, execu
     Run workflow for multiple countries and aggregate results.
     Simple approach - create date folder and process countries there.
     """
-    # Create date-based folder for organization
-    today_folder = datetime.now().strftime('%Y-%m-%d')
-    output_dir = os.path.join('reports', today_folder)
-    os.makedirs(output_dir, exist_ok=True)
+    # Create unique date-based folder for organization
+    output_dir = get_unique_output_dir()
     
-    logging.info(f"Created output directory: {output_dir}")
+    logging.info(f"Using output directory: {output_dir}")
     
     # Store original working directory
     original_cwd = os.getcwd()
@@ -1205,8 +1237,7 @@ def main():
         # Process only CSV file countries
         logging.info(f"Processing CSV file countries only for month {target_month}")
         
-        output_dir = os.path.join('reports', datetime.now().strftime('%Y-%m-%d'))
-        os.makedirs(output_dir, exist_ok=True)
+        output_dir = get_unique_output_dir()
         
         # Determine if in daily mode
         is_daily_mode = args.daily
