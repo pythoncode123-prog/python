@@ -5,12 +5,12 @@ Main workflow launcher - Enhanced with CSV auto-discovery.
 Key features:
 - Single or multi-country execution
 - Date range modes: --monthly (previous month), --daily (YTD)
-- Page title updates now target config.json (single source of truth)
 - Query date range updates preserve the original query formatting (no column tampering)
 - Test mode (--test) uses a predefined test CSV (handled inside workflow)
 - --no-publish skips Confluence upload
 - Multi-country support with simple date-based folder organization
 - AUTO-DISCOVERY: Automatically detects CSV countries from files matching pattern
+- NO CONFIG MODIFICATION: Page titles are generated at runtime in confluence_publisher
 """
 
 import os
@@ -195,75 +195,6 @@ def update_query_dates_preserve(query_path, start_date, end_date):
 
 
 # ---------------------------------------------------------------------------
-# Page Title Updater (JSON Single Source) - UPDATED FOR YTD vs MONTH NAME
-# ---------------------------------------------------------------------------
-
-def update_confluence_page_title(config_path, suffix, is_daily=False):
-    """
-    Update PAGE_TITLE in JSON.
-    
-    For daily mode: append " - YTD" 
-    For monthly mode: append " - <MonthName>" (e.g., " - August")
-    """
-    try:
-        # Use absolute path to ensure we can find the config file
-        abs_config_path = os.path.abspath(config_path)
-        if not os.path.exists(abs_config_path):
-            logging.error(f"Config file not found: {abs_config_path}")
-            return False
-
-        # JSON path (primary)
-        if abs_config_path.endswith('.json'):
-            try:
-                with open(abs_config_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except Exception as e:
-                logging.error(f"Failed reading JSON config {abs_config_path}: {e}")
-                return False
-
-            if 'PAGE_TITLE' not in data:
-                logging.error(f"PAGE_TITLE key not found in JSON {abs_config_path}")
-                return False
-
-            # Get base title by removing existing suffixes
-            base = data['PAGE_TITLE']
-            
-            # Remove any existing suffixes (YTD, month names, _daily)
-            base = re.sub(r'_daily$', '', base)
-            base = re.sub(r'\s+-\s+YTD$', '', base)
-            base = re.sub(
-                r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December)$',
-                '', base
-            )
-            
-            # Apply new suffix based on mode
-            if is_daily:
-                new_title = f"{base} - YTD"
-            else:
-                # For monthly mode, append the month name (suffix parameter contains month name)
-                new_title = f"{base} - {suffix}"
-
-            data['PAGE_TITLE'] = new_title
-            
-            try:
-                with open(abs_config_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=4)
-            except Exception as e:
-                logging.error(f"Failed writing JSON config {abs_config_path}: {e}")
-                return False
-
-            logging.info(f"Successfully updated Confluence PAGE_TITLE to: {new_title}")
-            return True
-
-        logging.error(f"Config file is not JSON format: {abs_config_path}")
-        return False
-
-    except Exception as e:
-        logging.error(f"Error updating Confluence page title: {str(e)}")
-        return False
-
-
-# ---------------------------------------------------------------------------
 # CSV File Analysis Helper
 # ---------------------------------------------------------------------------
 
@@ -292,46 +223,90 @@ def analyze_csv_file(csv_path):
 
 
 # ---------------------------------------------------------------------------
-# FIXED: CSV Auto-Discovery Functions (NO REGEX)
+# FIXED: CSV Auto-Discovery Functions for YTD mode
 # ---------------------------------------------------------------------------
 
-def auto_discover_csv_countries(csv_path, target_month):
+def auto_discover_csv_countries(csv_path, target_month, is_daily_mode=False):
     """
     Auto-discover CSV countries by scanning for: Countrycode_USAGEREPORT_YYYYMM.csv
+    FIXED: In daily mode, scan for ALL months in current year
     """
     if not os.path.exists(csv_path):
         logging.warning(f"CSV countries path does not exist: {csv_path}")
         return []
     
-    # Simple pattern: MX_USAGEREPORT_202508.csv
-    pattern = f"*_USAGEREPORT_{target_month}.csv"
-    search_pattern = os.path.join(csv_path, pattern)
-    logging.info(f"Scanning for CSV files: {search_pattern}")
+    discovered_countries = {}  # Use dict to avoid duplicates, keyed by country_code
     
-    discovered_countries = []
-    matching_files = glob.glob(search_pattern)
+    if is_daily_mode:
+        # For YTD/daily mode: scan for all months in current year
+        current_year = datetime.now().year
+        current_month = datetime.now().month
+        
+        logging.info(f"YTD mode: Scanning for CSV files from all months in {current_year}")
+        
+        for month in range(1, current_month + 1):  # Jan to current month
+            month_str = f"{current_year}{month:02d}"  # e.g., "202501", "202502"
+            pattern = f"*_USAGEREPORT_{month_str}.csv"
+            search_pattern = os.path.join(csv_path, pattern)
+            logging.info(f"  Scanning for month {month:02d}: {search_pattern}")
+            
+            matching_files = glob.glob(search_pattern)
+            
+            for file_path in matching_files:
+                filename = os.path.basename(file_path)
+                if '_USAGEREPORT_' in filename:
+                    country_code = filename.split('_USAGEREPORT_')[0]
+                    if country_code and len(country_code) >= 2:
+                        # Store all files for each country
+                        if country_code not in discovered_countries:
+                            discovered_countries[country_code] = {
+                                'name': country_code,
+                                'country_code': country_code,
+                                'files': []
+                            }
+                        discovered_countries[country_code]['files'].append({
+                            'file_path': file_path,
+                            'filename': filename,
+                            'month': month_str
+                        })
+                        logging.info(f"    Found: {country_code} -> {filename}")
+    else:
+        # For monthly mode: scan for specific month only
+        pattern = f"*_USAGEREPORT_{target_month}.csv"
+        search_pattern = os.path.join(csv_path, pattern)
+        logging.info(f"Monthly mode: Scanning for CSV files: {search_pattern}")
+        
+        matching_files = glob.glob(search_pattern)
+        
+        for file_path in matching_files:
+            filename = os.path.basename(file_path)
+            if '_USAGEREPORT_' in filename:
+                country_code = filename.split('_USAGEREPORT_')[0]
+                if country_code and len(country_code) >= 2:
+                    discovered_countries[country_code] = {
+                        'name': country_code,
+                        'country_code': country_code,
+                        'files': [{
+                            'file_path': file_path,
+                            'filename': filename,
+                            'month': target_month
+                        }]
+                    }
+                    logging.info(f"  Discovered: {country_code} -> {filename}")
     
-    for file_path in matching_files:
-        filename = os.path.basename(file_path)
-        if '_USAGEREPORT_' in filename:
-            country_code = filename.split('_USAGEREPORT_')[0]
-            if country_code and len(country_code) >= 2:
-                discovered_countries.append({
-                    'name': country_code,
-                    'country_code': country_code,
-                    'file_path': file_path,
-                    'filename': filename
-                })
-                logging.info(f"Discovered CSV country: {country_code} -> {filename}")
+    # Convert dict to list
+    result = list(discovered_countries.values())
     
-    logging.info(f"Auto-discovered {len(discovered_countries)} CSV countries for {target_month}")
-    return discovered_countries
+    total_files = sum(len(country['files']) for country in result)
+    logging.info(f"Auto-discovered {len(result)} unique CSV countries with {total_files} total files")
+    
+    return result
 
 
 def process_csv_file_countries(output_dir, target_month, test_mode=False, is_daily_mode=False):
     """
     Process countries that provide CSV files directly using auto-discovery.
-    FIXED: Always return a list, never None
+    FIXED: Support YTD mode for daily runs - process ALL months
     
     Args:
         output_dir: Output directory for processed files
@@ -353,11 +328,14 @@ def process_csv_file_countries(output_dir, target_month, test_mode=False, is_dai
             logging.info("No CSV_COUNTRIES_PATH configured, skipping CSV file countries")
             return []
         
-        # Auto-discover CSV countries
-        csv_countries = auto_discover_csv_countries(csv_path, target_month)
+        # Auto-discover CSV countries - pass is_daily_mode flag
+        csv_countries = auto_discover_csv_countries(csv_path, target_month, is_daily_mode)
         
         if not csv_countries:
-            logging.info(f"No CSV countries found for month {target_month}")
+            if is_daily_mode:
+                logging.info(f"No CSV countries found for YTD (current year)")
+            else:
+                logging.info(f"No CSV countries found for month {target_month}")
             return []
         
         logging.info(f"Processing {len(csv_countries)} auto-discovered CSV countries")
@@ -368,12 +346,12 @@ def process_csv_file_countries(output_dir, target_month, test_mode=False, is_dai
         for csv_country in csv_countries:
             country_name = csv_country['name']
             country_code = csv_country['country_code']
-            source_file_path = csv_country['file_path']
+            country_files = csv_country['files']
             
             # Output file in our processing directory
             output_file = os.path.join(output_dir, f"data_{country_name.lower()}.csv")
             
-            logging.info(f"Processing CSV country: {country_name} from {source_file_path}")
+            logging.info(f"Processing CSV country: {country_name} ({len(country_files)} files)")
             
             if test_mode:
                 # Create dummy test data for CSV countries
@@ -397,11 +375,21 @@ def process_csv_file_countries(output_dir, target_month, test_mode=False, is_dai
                 continue
             
             try:
-                # Process the actual CSV file with daily mode flag
-                success = process_single_csv_country_file(
-                    source_file_path, output_file, country_name, target_month,
-                    is_daily_mode=is_daily_mode
-                )
+                if is_daily_mode:
+                    # For YTD mode: aggregate all monthly files for this country
+                    success = process_multiple_csv_files_for_country(
+                        country_files, output_file, country_name, is_daily_mode=True
+                    )
+                else:
+                    # For monthly mode: process single file
+                    if country_files:
+                        source_file_path = country_files[0]['file_path']
+                        success = process_single_csv_country_file(
+                            source_file_path, output_file, country_name, target_month,
+                            is_daily_mode=False
+                        )
+                    else:
+                        success = False
                 
                 results.append({
                     'name': country_name,
@@ -435,10 +423,137 @@ def process_csv_file_countries(output_dir, target_month, test_mode=False, is_dai
         return []  # Always return a list, even on error
 
 
+def process_multiple_csv_files_for_country(country_files, output_file, country_name, is_daily_mode=True):
+    """
+    Process multiple CSV files for a single country (for YTD mode).
+    Aggregates all monthly files into a single output.
+    """
+    try:
+        all_data_frames = []
+        
+        for file_info in country_files:
+            file_path = file_info['file_path']
+            month = file_info['month']
+            
+            logging.info(f"  Reading {country_name} file for month {month}: {file_info['filename']}")
+            
+            try:
+                # Read the CSV file
+                df = pd.read_csv(file_path)
+                
+                # Handle different possible column names for jobs
+                jobs_column = None
+                for col in ['JOBS', 'JOBS_PER_DAY', 'TOTAL_JOBS', 'JOB_COUNT', 'FVALUE']:
+                    if col in df.columns:
+                        jobs_column = col
+                        break
+                
+                if jobs_column is None:
+                    numeric_cols = df.select_dtypes(include=['number']).columns
+                    if len(numeric_cols) > 0:
+                        jobs_column = numeric_cols[-1]
+                
+                # Handle date column
+                date_column = None
+                for col in ['NET_DATE', 'DATE', 'DAY', 'REPORT_DATE']:
+                    if col in df.columns:
+                        date_column = col
+                        break
+                
+                if date_column is None or jobs_column is None:
+                    logging.warning(f"    Missing required columns in {file_info['filename']}")
+                    continue
+                
+                # Parse dates with various formats
+                date_formats = [
+                    '%d/%m/%Y %H:%M',     # 01/08/2025 08:00
+                    '%d/%m/%Y %H:%M:%S',  # 01/08/2025 08:00:00
+                    '%Y-%m-%d %H:%M:%S',  # 2025-08-01 08:00:00
+                    '%Y-%m-%d',           # 2025-08-01
+                    '%m/%d/%Y %H:%M',     # 08/01/2025 08:00 (US format)
+                    '%m/%d/%Y %H:%M:%S',  # 08/01/2025 08:00:00 (US format)
+                ]
+                
+                # Try to parse dates
+                date_parsed = False
+                for date_format in date_formats:
+                    try:
+                        df[date_column] = pd.to_datetime(df[date_column], format=date_format)
+                        date_parsed = True
+                        break
+                    except:
+                        continue
+                
+                if not date_parsed:
+                    try:
+                        df[date_column] = pd.to_datetime(df[date_column], dayfirst=True)
+                        date_parsed = True
+                    except:
+                        try:
+                            df[date_column] = pd.to_datetime(df[date_column])
+                            date_parsed = True
+                        except:
+                            logging.warning(f"    Could not parse dates in {file_info['filename']}")
+                            continue
+                
+                # Clean and prepare data
+                df = df[pd.notna(df[date_column])].copy()
+                df['DATE_ONLY'] = df[date_column].dt.date
+                
+                # Convert jobs column to numeric
+                df[jobs_column] = pd.to_numeric(
+                    df[jobs_column].astype(str).str.replace(',', '').str.strip(), 
+                    errors='coerce'
+                )
+                
+                df = df[pd.notna(df[jobs_column])].copy()
+                
+                if not df.empty:
+                    # Group by date and sum
+                    daily = df.groupby('DATE_ONLY')[jobs_column].sum().reset_index()
+                    daily.columns = ['DATE_ONLY', 'TOTAL_JOBS']
+                    daily['NET_DATE'] = pd.to_datetime(daily['DATE_ONLY']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    all_data_frames.append(daily[['NET_DATE', 'TOTAL_JOBS']])
+                    logging.info(f"    Added {len(daily)} daily records from month {month}")
+                
+            except Exception as e:
+                logging.error(f"    Error processing file {file_info['filename']}: {e}")
+                continue
+        
+        if not all_data_frames:
+            logging.error(f"No valid data found for {country_name}")
+            return False
+        
+        # Concatenate all monthly data
+        combined_df = pd.concat(all_data_frames, ignore_index=True)
+        
+        # Group by date again in case there are duplicates
+        combined_df['DATE'] = pd.to_datetime(combined_df['NET_DATE'])
+        final_df = combined_df.groupby('DATE')['TOTAL_JOBS'].sum().reset_index()
+        final_df['NET_DATE'] = final_df['DATE'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        final_df = final_df[['NET_DATE', 'TOTAL_JOBS']].sort_values('NET_DATE')
+        
+        # Log summary
+        logging.info(f"Combined {country_name} YTD data: {len(final_df)} daily records")
+        logging.info(f"  Date range: {final_df['NET_DATE'].min()} to {final_df['NET_DATE'].max()}")
+        logging.info(f"  Total jobs: {final_df['TOTAL_JOBS'].sum():,}")
+        
+        # Save to output file
+        final_df.to_csv(output_file, index=False)
+        
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error processing multiple files for {country_name}: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return False
+
+
 def process_single_csv_country_file(source_file, output_file, country_name, target_month, is_daily_mode=False):
     """
     Process a single CSV file from a country and convert it to our standard format.
-    FIXED: Support YTD extraction for daily mode
     
     Args:
         source_file: Path to source CSV file
@@ -544,34 +659,23 @@ def process_single_csv_country_file(source_file, output_file, country_name, targ
         max_date = df[date_column].max()
         logging.info(f"Date range in file: {min_date} to {max_date}")
         
-        # Filter data based on mode
-        if is_daily_mode:
-            # For daily/YTD mode: get all data from current year
-            current_year = datetime.now().year
-            df_filtered = df[df[date_column].dt.year == current_year].copy()
-            logging.info(f"YTD mode: filtered to {len(df_filtered)} rows for entire year {current_year}")
+        # For monthly mode: filter to specific month
+        if target_month:
+            target_year = int(target_month[:4])
+            target_month_num = int(target_month[4:6])
+            
+            df_filtered = df[
+                (df[date_column].dt.year == target_year) & 
+                (df[date_column].dt.month == target_month_num)
+            ].copy()
             
             if df_filtered.empty:
-                logging.warning(f"No data found for year {current_year} in {country_name}, using all data")
+                logging.warning(f"No data found for target month {target_month} in {country_name}")
                 df_filtered = df.copy()
-        else:
-            # For monthly mode: filter to specific month
-            if target_month:
-                target_year = int(target_month[:4])
-                target_month_num = int(target_month[4:6])
-                
-                df_filtered = df[
-                    (df[date_column].dt.year == target_year) & 
-                    (df[date_column].dt.month == target_month_num)
-                ].copy()
-                
-                if df_filtered.empty:
-                    logging.warning(f"No data found for target month {target_month} in {country_name}")
-                    df_filtered = df.copy()
-                else:
-                    logging.info(f"Monthly mode: filtered to {len(df_filtered)} rows for month {target_month}")
             else:
-                df_filtered = df.copy()
+                logging.info(f"Monthly mode: filtered to {len(df_filtered)} rows for month {target_month}")
+        else:
+            df_filtered = df.copy()
         
         # Convert jobs column to numeric, handling any formatting issues
         df_filtered[jobs_column] = pd.to_numeric(
@@ -672,7 +776,6 @@ def run_workflow_multi_enhanced(countries, default_output_csv, execution_timesta
                                test_mode=False, publish_test=True, target_month=None, is_daily_mode=False):
     """
     Enhanced multi-country workflow that handles both database countries and CSV file countries.
-    FIXED: Pass daily mode flag to CSV processing and publishing
     
     Args:
         countries: List of database countries from countries.json
@@ -1082,13 +1185,16 @@ def main():
             logging.error("No CSV_COUNTRIES_PATH configured")
             return 1
         
-        csv_countries = auto_discover_csv_countries(csv_path, target_month)
+        # Use the enhanced auto_discover function
+        csv_countries = auto_discover_csv_countries(csv_path, target_month, args.daily)
         
-        print(f"\nAvailable CSV countries for {target_month}:")
+        print(f"\nAvailable CSV countries for {'YTD' if args.daily else target_month}:")
         print("=" * 50)
         if csv_countries:
             for country in csv_countries:
-                print(f"  {country['country_code']}: {country['filename']}")
+                print(f"  {country['country_code']}: {len(country['files'])} file(s)")
+                for file_info in country['files']:
+                    print(f"    - {file_info['filename']}")
         else:
             print("  No CSV countries found")
         print()
@@ -1192,11 +1298,7 @@ def main():
             else:
                 prepared.append({"name": name, "config_file": cfg_path, "query_file": qry_path})
 
-        # Update title ONCE (global JSON) not per country
-        if args.monthly and month_name:
-            update_confluence_page_title(TITLE_CONFIG_FILE, month_name, is_daily=False)
-        elif args.daily:
-            update_confluence_page_title(TITLE_CONFIG_FILE, "YTD", is_daily=True)
+        # NO MORE PAGE TITLE UPDATES - handled at runtime in confluence_publisher
 
         # Determine if we're in daily mode
         is_daily_mode = args.daily
@@ -1222,22 +1324,15 @@ def main():
         if not update_query_dates_preserve(QUERY_FILE, sd, ed):
             logging.error("Failed to update query dates for previous month")
             return 1
-        if not update_confluence_page_title(TITLE_CONFIG_FILE, month_name, is_daily=False):
-            logging.warning("Failed to update Confluence page title (JSON).")
-        else:
-            logging.info(f"Confluence page title updated to include: {month_name}")
-        logging.info(f"Query date range updated (monthly) by {EXECUTION_USER}")
+        logging.info(f"Query date range updated (monthly) to previous month: {month_name}")
 
     elif args.daily:
         sd, ed, _ = date_range
         if not update_query_dates_preserve(QUERY_FILE, sd, ed):
             logging.error("Failed to update query dates for YTD")
             return 1
-        if not update_confluence_page_title(TITLE_CONFIG_FILE, "YTD", is_daily=True):
-            logging.warning("Failed to update Confluence page title (JSON).")
-        else:
-            logging.info("Confluence page title updated to include: YTD")
-        logging.info(f"Query date range updated (daily/YTD) by {EXECUTION_USER}")
+        current_month = calendar.month_name[datetime.now().month]
+        logging.info(f"Query date range updated (daily/YTD) through {current_month}")
 
     # Run single workflow
     result = run_workflow(
