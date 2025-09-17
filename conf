@@ -7,10 +7,11 @@ import os
 from datetime import datetime
 import logging
 import re
+import calendar
 from typing import Tuple, Optional, Dict, List
 
 # -------------------------------------------------------------
-# Confluence Publisher - FIXED: Uses environment variable for mode
+# Confluence Publisher - FIXED: Appends suffix at runtime without modifying config
 # -------------------------------------------------------------
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -161,6 +162,39 @@ def create_session(config: Dict) -> Optional[requests.Session]:
     
     session.verify = False
     return session
+
+# =============================================================
+# Helper function to get appropriate page title based on mode
+# =============================================================
+
+def get_page_title_with_suffix(base_title: str, is_daily: bool) -> str:
+    """
+    Generate the appropriate page title based on mode.
+    Does NOT modify config, just returns the title with suffix.
+    
+    For daily mode: append " - <CurrentMonth> YTD"
+    For monthly mode: append " - <PreviousMonth>"
+    """
+    # Clean the base title of any existing suffixes (just in case)
+    clean_title = base_title
+    clean_title = re.sub(r'\s+-\s+\w+\s+YTD$', '', clean_title)  # Remove " - Month YTD"
+    clean_title = re.sub(r'\s+-\s+YTD$', '', clean_title)  # Remove " - YTD"
+    clean_title = re.sub(
+        r'\s+-\s+(January|February|March|April|May|June|July|August|September|October|November|December)$',
+        '', clean_title
+    )
+    
+    if is_daily:
+        # For daily mode: append current month + YTD
+        current_month = calendar.month_name[datetime.now().month]
+        return f"{clean_title} - {current_month} YTD"
+    else:
+        # For monthly mode: append previous month name
+        today = datetime.now()
+        first_day_current = datetime(today.year, today.month, 1)
+        last_day_prev = first_day_current - datetime.timedelta(days=1)
+        prev_month_name = calendar.month_name[last_day_prev.month]
+        return f"{clean_title} - {prev_month_name}"
 
 # =============================================================
 # Data Loading & Sanitization
@@ -866,7 +900,7 @@ def test_connection(session: requests.Session, config: Dict) -> bool:
         return False
 
 # =============================================================
-# Main Publish Function - FIXED: Uses environment variable
+# Main Publish Function - FIXED: Uses environment variable and dynamic title
 # =============================================================
 
 def publish_to_confluence(report_file='task_usage_report_by_region.csv',
@@ -875,7 +909,7 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
                           is_daily_mode: bool = None) -> bool:
     """
     Publish report to Confluence with explicit mode control.
-    FIXED: Always check environment variable for mode when not explicitly passed
+    FIXED: Generates title with suffix at runtime without modifying config
     
     Args:
         report_file: Path to the CSV report file
@@ -884,6 +918,8 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         is_daily_mode: If True, use YTD mode; if False, use monthly mode; if None, check env var
     """
     try:
+        from datetime import timedelta
+        
         # Check report file exists
         if not os.path.exists(report_file):
             logging.error(f"Report file {report_file} not found.")
@@ -900,22 +936,27 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
             logging.error("Failed to load config")
             return False
         
-        # Add test suffix if in test mode
-        if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
-            config['PAGE_TITLE'] += "-TEST"
-
-        # CRITICAL FIX: Always check environment variable for mode
-        # This ensures mode is consistent even when called from workflow.py
+        # Get base title from config
+        base_title = config['PAGE_TITLE']
+        
+        # Check environment variable for mode if not explicitly passed
         if is_daily_mode is not None:
             # If explicitly passed, use that
             is_daily = is_daily_mode
             logging.info(f"Mode explicitly passed as parameter: {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
         else:
-            # Check environment variable - this is the key fix!
+            # Check environment variable
             env_mode = os.environ.get('CONFLUENCE_REPORT_MODE', 'MONTHLY')
             is_daily = (env_mode == 'DAILY')
             logging.info(f"Mode from environment variable CONFLUENCE_REPORT_MODE: {env_mode}")
             logging.info(f"Using mode: {'DAILY (YTD)' if is_daily else 'MONTHLY'}")
+        
+        # Generate the appropriate page title with suffix
+        config['PAGE_TITLE'] = get_page_title_with_suffix(base_title, is_daily)
+        
+        # Add test suffix if in test mode
+        if test_mode and not config['PAGE_TITLE'].endswith("-TEST"):
+            config['PAGE_TITLE'] += "-TEST"
         
         baseline = config.get('BASELINE', 1899206)
 
@@ -973,8 +1014,14 @@ def publish_to_confluence(report_file='task_usage_report_by_region.csv',
         user = os.environ.get('USER', 'automated')
         yesterday = (datetime.now().date() - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
         
-        title_suffix = " - YTD" if is_daily else ""
-        date_range_desc = "YTD (Year-to-Date)" if is_daily else "Current Month"
+        # Generate appropriate title and description based on mode
+        if is_daily:
+            current_month = calendar.month_name[datetime.now().month]
+            title_suffix = f" - {current_month} YTD"
+            date_range_desc = f"Year-to-Date through {current_month}"
+        else:
+            title_suffix = ""  # Month name is already in the page title for monthly mode
+            date_range_desc = "Previous Month"
         
         content = f"""
 <h1>Task Usage Report{title_suffix}{' - TEST DATA' if test_mode else ''}</h1>
