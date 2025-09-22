@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Setup script to securely store Confluence credentials.
-This script prompts for passwords and encrypts them using SecureConfig.
+Enhanced Confluence setup with debugging and common fixes
 """
 
 import os
@@ -9,220 +8,417 @@ import sys
 import json
 import getpass
 import logging
+import base64
 from pathlib import Path
 
-# Add the lib directory to path to import SecureConfig
+# Setup detailed logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+# Add lib to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
-from secure_config import SecureConfig
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+try:
+    from secure_config import SecureConfig
+except ImportError as e:
+    print(f"ERROR: Cannot import SecureConfig: {e}")
+    sys.exit(1)
 
-def setup_secure():
-    """
-    Main setup function to collect and encrypt credentials.
-    """
+def debug_paths():
+    """Debug and verify all paths"""
     print("\n" + "="*50)
-    print("SECURE CONFIGURATION SETUP")
+    print("PATH DEBUGGING")
     print("="*50)
     
-    # Ensure config directory exists
-    config_dir = os.path.join(os.path.dirname(__file__), 'config')
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    print(f"Script directory: {script_dir}")
+    print(f"Project root: {SecureConfig.PROJECT_ROOT}")
+    print(f"Key file path: {SecureConfig.KEY_FILE}")
+    print(f"Config file path: {SecureConfig.CONFIG_FILE}")
+    
+    print(f"\nKey file exists: {os.path.exists(SecureConfig.KEY_FILE)}")
+    print(f"Config file exists: {os.path.exists(SecureConfig.CONFIG_FILE)}")
+    
+    return script_dir
+
+def fix_encryption_issue():
+    """Fix common encryption/decryption issues"""
+    print("\n" + "="*50)
+    print("FIXING ENCRYPTION ISSUES")
+    print("="*50)
+    
+    # Remove old key and salt files
+    files_to_remove = [
+        SecureConfig.KEY_FILE,
+        SecureConfig.KEY_FILE + '.salt'
+    ]
+    
+    for file_path in files_to_remove:
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                print(f"✓ Removed old file: {file_path}")
+            except Exception as e:
+                print(f"✗ Could not remove {file_path}: {e}")
+    
+    # Generate new key
+    print("\nGenerating fresh encryption key...")
+    key = SecureConfig.generate_key()
+    
+    if key:
+        print(f"✓ New key generated successfully")
+        print(f"  Key location: {SecureConfig.KEY_FILE}")
+        return key
+    else:
+        print("✗ Failed to generate key")
+        return None
+
+def setup_confluence_secure():
+    """Main setup function with enhanced error handling"""
+    
+    # Debug paths first
+    debug_paths()
+    
+    print("\n" + "="*50)
+    print("CONFLUENCE SECURE SETUP")
+    print("="*50)
+    
+    # Ensure directories exist
+    config_dir = os.path.dirname(SecureConfig.CONFIG_FILE)
     os.makedirs(config_dir, exist_ok=True)
     
-    config_file = os.path.join(config_dir, 'config.json')
-    
-    # Load existing config if it exists
+    # Load or create config
     config = {}
-    if os.path.exists(config_file):
+    if os.path.exists(SecureConfig.CONFIG_FILE):
         try:
-            with open(config_file, 'r') as f:
+            with open(SecureConfig.CONFIG_FILE, 'r') as f:
                 config = json.load(f)
-            print(f"\nExisting configuration found at: {config_file}")
+            print(f"\n✓ Loaded existing config from: {SecureConfig.CONFIG_FILE}")
+            
+            # Show current settings (without password)
+            print("\nCurrent settings:")
+            for key, value in config.items():
+                if 'PASSWORD' not in key and 'TOKEN' not in key:
+                    print(f"  {key}: {value}")
         except Exception as e:
-            logging.warning(f"Could not load existing config: {e}")
+            print(f"Warning: Could not load config: {e}")
+            config = {}
     
-    # Check if we need to create or regenerate the encryption key
-    regenerate_key = False
-    if os.path.exists(SecureConfig.KEY_FILE):
-        response = input("\nEncryption key already exists. Regenerate? (y/N): ").strip().lower()
-        regenerate_key = response == 'y'
-    else:
-        print("\nNo encryption key found. Creating new key...")
-        regenerate_key = True
-    
-    if regenerate_key:
-        # Optional: Use a passphrase for key derivation
-        use_passphrase = input("\nUse a passphrase for key generation? (y/N): ").strip().lower()
-        if use_passphrase == 'y':
-            passphrase = getpass.getpass("Enter passphrase for key generation: ")
-            passphrase_confirm = getpass.getpass("Confirm passphrase: ")
-            if passphrase != passphrase_confirm:
-                print("ERROR: Passphrases do not match!")
-                return False
-            key = SecureConfig.generate_key(passphrase)
-        else:
-            key = SecureConfig.generate_key()
-        
-        if not key:
-            print("ERROR: Failed to generate encryption key!")
-            return False
-        print("✓ Encryption key generated successfully")
-    
-    # Collect Confluence credentials
+    # Check encryption key status
     print("\n" + "-"*50)
-    print("CONFLUENCE CONFIGURATION")
+    print("ENCRYPTION KEY STATUS")
     print("-"*50)
     
-    # Confluence URL
-    default_url = config.get('CONFLUENCE_URL', '')
-    confluence_url = input(f"Confluence URL [{default_url}]: ").strip()
-    if not confluence_url and default_url:
+    if os.path.exists(SecureConfig.KEY_FILE):
+        print("✓ Encryption key exists")
+        recreate = input("\nRecreate encryption key? (fixes most issues) (Y/n): ").strip().lower()
+        if recreate != 'n':
+            key = fix_encryption_issue()
+            if not key:
+                return False
+    else:
+        print("✗ No encryption key found")
+        key = fix_encryption_issue()
+        if not key:
+            return False
+    
+    # Collect Confluence details
+    print("\n" + "-"*50)
+    print("CONFLUENCE CREDENTIALS")
+    print("-"*50)
+    
+    # URL
+    default_url = config.get('CONFLUENCE_URL', 'https://your-domain.atlassian.net')
+    print(f"\nCurrent URL: {default_url}")
+    confluence_url = input(f"Confluence URL (press Enter to keep current): ").strip()
+    if not confluence_url:
         confluence_url = default_url
     
-    if not confluence_url:
-        print("ERROR: Confluence URL is required!")
-        return False
+    # Clean up URL
+    confluence_url = confluence_url.rstrip('/')
+    if not confluence_url.startswith('http'):
+        confluence_url = 'https://' + confluence_url
     
-    # Confluence Username
+    # Username/Email
     default_username = config.get('CONFLUENCE_USERNAME', '')
-    confluence_username = input(f"Confluence Username [{default_username}]: ").strip()
-    if not confluence_username and default_username:
+    print(f"\nCurrent username: {default_username}")
+    confluence_username = input(f"Username/Email (press Enter to keep current): ").strip()
+    if not confluence_username:
         confluence_username = default_username
     
     if not confluence_username:
-        print("ERROR: Confluence username is required!")
+        print("ERROR: Username is required!")
         return False
     
-    # Confluence Password - This is what was missing!
-    print("\n** Confluence Password/API Token **")
-    print("Note: For Confluence Cloud, use an API token instead of password")
-    print("Generate token at: https://id.atlassian.com/manage/api-tokens")
+    # Password/API Token
+    print("\n" + "-"*50)
+    print("API TOKEN / PASSWORD")
+    print("-"*50)
+    print("\n⚠️  IMPORTANT: For Confluence Cloud, you MUST use an API token, not your password!")
+    print("   Generate token at: https://id.atlassian.com/manage-profile/security/api-tokens")
+    print("\nFor Confluence Server/Data Center, use your regular password.")
     
-    confluence_password = getpass.getpass("Enter Confluence password/API token: ")
+    # Check if Cloud or Server
+    is_cloud = '.atlassian.net' in confluence_url
+    if is_cloud:
+        print(f"\n✓ Detected Confluence Cloud URL")
+        print("  You MUST use an API token, not a password")
+    else:
+        print(f"\n✓ Detected Confluence Server/Data Center URL")
+    
+    # Get password/token
+    password_prompt = "Enter API Token: " if is_cloud else "Enter Password: "
+    confluence_password = getpass.getpass(password_prompt)
+    
     if not confluence_password:
-        print("ERROR: Confluence password/API token is required!")
+        print("ERROR: Password/Token is required!")
         return False
     
-    # Confirm password
-    confluence_password_confirm = getpass.getpass("Confirm password/API token: ")
-    if confluence_password != confluence_password_confirm:
-        print("ERROR: Passwords do not match!")
+    # Confirm
+    confirm_prompt = "Confirm API Token: " if is_cloud else "Confirm Password: "
+    password_confirm = getpass.getpass(confirm_prompt)
+    
+    if confluence_password != password_confirm:
+        print("ERROR: Entries do not match!")
         return False
     
-    # Encrypt the Confluence password
-    print("\nEncrypting Confluence password...")
+    # Test encryption/decryption before saving
+    print("\n" + "-"*50)
+    print("TESTING ENCRYPTION/DECRYPTION")
+    print("-"*50)
+    
+    print("Encrypting password...")
     encrypted_password = SecureConfig.encrypt_password(confluence_password)
     
     if not encrypted_password:
-        print("ERROR: Failed to encrypt password!")
+        print("✗ Encryption failed!")
+        print("  Attempting to fix...")
+        key = fix_encryption_issue()
+        if key:
+            encrypted_password = SecureConfig.encrypt_password(confluence_password)
+    
+    if not encrypted_password:
+        print("ERROR: Cannot encrypt password!")
         return False
     
-    print("✓ Password encrypted successfully")
+    print(f"✓ Encrypted successfully")
+    print(f"  Encrypted length: {len(encrypted_password)} chars")
     
-    # Update configuration
+    # Test decryption immediately
+    print("\nTesting decryption...")
+    decrypted_password = SecureConfig.decrypt_password(encrypted_password)
+    
+    if not decrypted_password:
+        print("✗ Decryption failed!")
+        return False
+    
+    if decrypted_password != confluence_password:
+        print("✗ Decrypted password doesn't match original!")
+        return False
+    
+    print("✓ Decryption successful - passwords match!")
+    
+    # Update config
     config.update({
         'CONFLUENCE_URL': confluence_url,
         'CONFLUENCE_USERNAME': confluence_username,
-        'CONFLUENCE_PASSWORD_ENCRYPTED': encrypted_password
+        'CONFLUENCE_PASSWORD_ENCRYPTED': encrypted_password,
+        'IS_CLOUD': is_cloud
     })
     
-    # Optional: Collect additional settings
-    collect_additional = input("\nConfigure additional settings? (y/N): ").strip().lower()
-    if collect_additional == 'y':
-        # Space key
-        default_space = config.get('CONFLUENCE_SPACE_KEY', '')
-        space_key = input(f"Default Confluence Space Key [{default_space}]: ").strip()
-        if space_key:
-            config['CONFLUENCE_SPACE_KEY'] = space_key
-        
-        # Page update interval
-        default_interval = config.get('UPDATE_INTERVAL_MINUTES', 60)
-        interval = input(f"Update interval (minutes) [{default_interval}]: ").strip()
-        if interval and interval.isdigit():
-            config['UPDATE_INTERVAL_MINUTES'] = int(interval)
+    # Optional settings
+    print("\n" + "-"*50)
+    print("OPTIONAL SETTINGS")
+    print("-"*50)
+    
+    # Space key
+    default_space = config.get('CONFLUENCE_SPACE_KEY', '')
+    space_input = input(f"Default Space Key [{default_space}]: ").strip()
+    if space_input:
+        config['CONFLUENCE_SPACE_KEY'] = space_input
+    elif default_space:
+        config['CONFLUENCE_SPACE_KEY'] = default_space
     
     # Save configuration
-    print("\nSaving configuration...")
+    print("\n" + "-"*50)
+    print("SAVING CONFIGURATION")
+    print("-"*50)
+    
     try:
-        with open(config_file, 'w') as f:
+        with open(SecureConfig.CONFIG_FILE, 'w') as f:
             json.dump(config, f, indent=4)
-        print(f"✓ Configuration saved to: {config_file}")
+        print(f"✓ Configuration saved to: {SecureConfig.CONFIG_FILE}")
     except Exception as e:
-        print(f"ERROR: Failed to save configuration: {e}")
+        print(f"✗ Failed to save config: {e}")
         return False
     
-    # Test the configuration
-    test_config = input("\nTest the configuration? (Y/n): ").strip().lower()
-    if test_config != 'n':
-        print("\nTesting configuration...")
-        test_success = test_confluence_connection(config)
-        if test_success:
-            print("✓ Connection test successful!")
-        else:
-            print("✗ Connection test failed. Please check your credentials.")
+    # Test connection
+    print("\n" + "-"*50)
+    print("CONNECTION TEST")
+    print("-"*50)
+    
+    test = input("\nTest Confluence connection now? (Y/n): ").strip().lower()
+    if test != 'n':
+        test_result = test_confluence_connection(config)
+        if not test_result:
+            print("\n⚠️  Connection test failed, but configuration is saved.")
+            print("   Check your credentials and network connection.")
     
     print("\n" + "="*50)
     print("SETUP COMPLETE")
     print("="*50)
-    print("\nYour Confluence password has been encrypted and stored securely.")
-    print(f"Encryption key location: {SecureConfig.KEY_FILE}")
-    print(f"Configuration location: {config_file}")
-    print("\n⚠️  Keep the .secure_key file safe - it's needed to decrypt your password!")
+    print(f"\n✓ Configuration file: {SecureConfig.CONFIG_FILE}")
+    print(f"✓ Encryption key: {SecureConfig.KEY_FILE}")
+    print("\n⚠️  Keep the .secure_key file safe!")
     
     return True
 
-
 def test_confluence_connection(config):
-    """
-    Test the Confluence connection with the encrypted credentials.
-    """
+    """Test the Confluence connection"""
     try:
-        # Decrypt the password
-        encrypted_password = config.get('CONFLUENCE_PASSWORD_ENCRYPTED')
-        if not encrypted_password:
-            print("ERROR: No encrypted password found in config")
-            return False
-        
-        password = SecureConfig.decrypt_password(encrypted_password)
-        if not password:
-            print("ERROR: Failed to decrypt password")
-            return False
-        
-        # Try to connect to Confluence (you'll need to add your Confluence library)
-        # Example with atlassian-python-api:
+        from atlassian import Confluence
+    except ImportError:
+        print("Installing atlassian-python-api for testing...")
+        os.system(f"{sys.executable} -m pip install atlassian-python-api")
         try:
             from atlassian import Confluence
-            
-            confluence = Confluence(
-                url=config['CONFLUENCE_URL'],
-                username=config['CONFLUENCE_USERNAME'],
-                password=password
-            )
-            
-            # Try a simple API call
-            user_info = confluence.get_current_user()
-            print(f"✓ Connected as: {user_info.get('displayName', 'Unknown')}")
-            return True
-            
         except ImportError:
-            print("Note: Install atlassian-python-api to test connection")
-            print("  pip install atlassian-python-api")
-            # Skip the actual test if library isn't installed
+            print("Could not install atlassian-python-api")
+            return False
+    
+    print("\nDecrypting password for connection test...")
+    
+    # Decrypt password
+    encrypted_password = config.get('CONFLUENCE_PASSWORD_ENCRYPTED')
+    if not encrypted_password:
+        print("✗ No encrypted password in config")
+        return False
+    
+    password = SecureConfig.decrypt_password(encrypted_password)
+    if not password:
+        print("✗ Failed to decrypt password")
+        print("\nDebug info:")
+        print(f"  Key file exists: {os.path.exists(SecureConfig.KEY_FILE)}")
+        print(f"  Encrypted password length: {len(encrypted_password)}")
+        return False
+    
+    print("✓ Password decrypted successfully")
+    
+    # Connect
+    print(f"\nConnecting to: {config['CONFLUENCE_URL']}")
+    print(f"Username: {config['CONFLUENCE_USERNAME']}")
+    
+    try:
+        confluence = Confluence(
+            url=config['CONFLUENCE_URL'],
+            username=config['CONFLUENCE_USERNAME'],
+            password=password,
+            cloud=config.get('IS_CLOUD', False)
+        )
+        
+        # Test API call
+        print("Testing API connection...")
+        user_info = confluence.get_current_user()
+        
+        if user_info:
+            print(f"✓ SUCCESS! Connected as: {user_info.get('displayName', user_info.get('publicName', 'Unknown'))}")
+            print(f"  Email: {user_info.get('email', 'N/A')}")
+            print(f"  Account ID: {user_info.get('accountId', user_info.get('userKey', 'N/A'))}")
+            
+            # Try to list spaces
+            try:
+                spaces = confluence.get_all_spaces(limit=3)
+                if spaces and spaces.get('results'):
+                    print(f"\n✓ Can access {len(spaces['results'])} space(s):")
+                    for space in spaces['results'][:3]:
+                        print(f"  - {space.get('key')}: {space.get('name')}")
+            except:
+                pass
+            
             return True
+        else:
+            print("✗ Could not get user info")
+            return False
             
     except Exception as e:
-        logging.error(f"Connection test failed: {e}")
+        print(f"✗ Connection failed: {str(e)}")
+        
+        # Common issues
+        if '401' in str(e) or 'Unauthorized' in str(e):
+            print("\n⚠️  Authentication failed. Check:")
+            print("  1. Username is correct (use email for Cloud)")
+            print("  2. For Cloud: Use API token, NOT password")
+            print("  3. For Server: Use regular password")
+            print("  4. Token/password has no extra spaces")
+        elif '404' in str(e):
+            print("\n⚠️  URL might be incorrect. Check:")
+            print("  1. URL format is correct")
+            print("  2. Include https://")
+            print("  3. For Cloud: https://your-domain.atlassian.net")
+        elif 'Connection' in str(e) or 'Network' in str(e):
+            print("\n⚠️  Network issue. Check:")
+            print("  1. Internet connection")
+            print("  2. Firewall/proxy settings")
+            print("  3. VPN if required")
+        
         return False
 
+def verify_stored_password():
+    """Verify that stored password can be decrypted"""
+    print("\n" + "="*50)
+    print("VERIFY STORED PASSWORD")
+    print("="*50)
+    
+    if not os.path.exists(SecureConfig.CONFIG_FILE):
+        print("✗ No config file found")
+        return False
+    
+    with open(SecureConfig.CONFIG_FILE, 'r') as f:
+        config = json.load(f)
+    
+    encrypted_password = config.get('CONFLUENCE_PASSWORD_ENCRYPTED')
+    if not encrypted_password:
+        print("✗ No encrypted password in config")
+        return False
+    
+    print(f"✓ Found encrypted password ({len(encrypted_password)} chars)")
+    
+    password = SecureConfig.decrypt_password(encrypted_password)
+    if password:
+        print("✓ Password decrypts successfully")
+        print(f"  Decrypted length: {len(password)} chars")
+        return True
+    else:
+        print("✗ Cannot decrypt password")
+        return False
 
 if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Setup secure Confluence configuration')
+    parser.add_argument('--verify', action='store_true', help='Verify stored password')
+    parser.add_argument('--debug', action='store_true', help='Show debug information')
+    parser.add_argument('--fix', action='store_true', help='Fix encryption issues')
+    
+    args = parser.parse_args()
+    
     try:
-        success = setup_secure()
-        sys.exit(0 if success else 1)
+        if args.verify:
+            verify_stored_password()
+        elif args.fix:
+            fix_encryption_issue()
+            print("\nNow run setup again to reconfigure")
+        elif args.debug:
+            debug_paths()
+            verify_stored_password()
+        else:
+            success = setup_confluence_secure()
+            sys.exit(0 if success else 1)
     except KeyboardInterrupt:
-        print("\n\nSetup cancelled by user.")
+        print("\n\nCancelled by user.")
         sys.exit(1)
     except Exception as e:
-        logging.error(f"Setup failed: {e}")
+        logging.error(f"Setup failed: {e}", exc_info=True)
         sys.exit(1)
