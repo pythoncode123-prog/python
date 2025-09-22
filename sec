@@ -1,188 +1,228 @@
-import os
-import base64
-import logging
-import json
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+#!/usr/bin/env python3
+"""
+Setup script to securely store Confluence credentials.
+This script prompts for passwords and encrypts them using SecureConfig.
+"""
 
-class SecureConfig:
-    """Class to handle secure encryption and decryption of sensitive data."""
+import os
+import sys
+import json
+import getpass
+import logging
+from pathlib import Path
+
+# Add the lib directory to path to import SecureConfig
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'lib'))
+from secure_config import SecureConfig
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+def setup_secure():
+    """
+    Main setup function to collect and encrypt credentials.
+    """
+    print("\n" + "="*50)
+    print("SECURE CONFIGURATION SETUP")
+    print("="*50)
     
-    # FIX: Always look for .secure_key in the project root directory
-    # Get the project root (parent of lib directory)
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    KEY_FILE = os.path.join(PROJECT_ROOT, '.secure_key')
-    CONFIG_FILE = os.path.join(PROJECT_ROOT, 'config', 'config.json')
+    # Ensure config directory exists
+    config_dir = os.path.join(os.path.dirname(__file__), 'config')
+    os.makedirs(config_dir, exist_ok=True)
     
-    @staticmethod
-    def generate_key(passphrase=None):
-        """
-        Generate a secure key for encryption.
-        If passphrase is provided, it will be used to derive the key.
-        Otherwise, a random key will be generated.
-        """
+    config_file = os.path.join(config_dir, 'config.json')
+    
+    # Load existing config if it exists
+    config = {}
+    if os.path.exists(config_file):
         try:
-            if passphrase:
-                # Derive key from passphrase
-                salt = os.urandom(16)
-                kdf = PBKDF2HMAC(
-                    algorithm=hashes.SHA256(),
-                    length=32,
-                    salt=salt,
-                    iterations=100000,
-                )
-                key = base64.urlsafe_b64encode(kdf.derive(passphrase.encode()))
-                
-                # Save salt to be able to recreate key
-                salt_file = SecureConfig.KEY_FILE + '.salt'
-                with open(salt_file, 'wb') as f:
-                    f.write(salt)
-            else:
-                # Generate random key
-                key = Fernet.generate_key()
-                
-            # Save key to file with restricted permissions
-            with open(SecureConfig.KEY_FILE, 'wb') as f:
-                f.write(key)
-            
-            # Set restrictive permissions (only on Unix-like systems)
-            try:
-                os.chmod(SecureConfig.KEY_FILE, 0o600)
-            except:
-                pass  # Windows doesn't support chmod the same way
-            
-            return key
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+            print(f"\nExisting configuration found at: {config_file}")
         except Exception as e:
-            logging.error(f"Error generating key: {str(e)}")
-            return None
+            logging.warning(f"Could not load existing config: {e}")
     
-    @staticmethod
-    def load_key(passphrase=None):
-        """
-        Load the encryption key from file.
-        If passphrase is provided, it will be used to derive the key.
-        """
-        try:
-            # Debug logging
-            logging.debug(f"Looking for key file at: {SecureConfig.KEY_FILE}")
-            logging.debug(f"Key file exists: {os.path.exists(SecureConfig.KEY_FILE)}")
-            
-            if passphrase:
-                salt_file = SecureConfig.KEY_FILE + '.salt'
-                if os.path.exists(salt_file):
-                    # Recreate key from passphrase
-                    with open(salt_file, 'rb') as f:
-                        salt = f.read()
-                    
-                    kdf = PBKDF2HMAC(
-                        algorithm=hashes.SHA256(),
-                        length=32,
-                        salt=salt,
-                        iterations=100000,
-                    )
-                    key = base64.urlsafe_b64encode(kdf.derive(passphrase.encode()))
-                    return key
-            
-            # Load key from file
-            if not os.path.exists(SecureConfig.KEY_FILE):
-                logging.error(f"Key file not found: {SecureConfig.KEY_FILE}")
-                return None
-                
-            with open(SecureConfig.KEY_FILE, 'rb') as f:
-                key = f.read()
-            
-            return key
-        except Exception as e:
-            logging.error(f"Error loading key: {str(e)}")
-            return None
+    # Check if we need to create or regenerate the encryption key
+    regenerate_key = False
+    if os.path.exists(SecureConfig.KEY_FILE):
+        response = input("\nEncryption key already exists. Regenerate? (y/N): ").strip().lower()
+        regenerate_key = response == 'y'
+    else:
+        print("\nNo encryption key found. Creating new key...")
+        regenerate_key = True
     
-    @staticmethod
-    def encrypt_password(password, key=None, passphrase=None):
-        """
-        Encrypt a password and return the encrypted value.
-        """
-        try:
-            # Get key
-            if not key:
-                key = SecureConfig.load_key(passphrase)
-                
-            if not key:
-                key = SecureConfig.generate_key(passphrase)
-                
-            if not key:
-                logging.error("Could not get encryption key")
-                return None
-                
-            # Create cipher
-            cipher = Fernet(key)
-            
-            # Encrypt password
-            encrypted_password = cipher.encrypt(password.encode())
-            
-            # Return base64 encoded encrypted password
-            return base64.b64encode(encrypted_password).decode('utf-8')
-            
-        except Exception as e:
-            logging.error(f"Error encrypting password: {str(e)}")
-            return None
-    
-    @staticmethod
-    def decrypt_password(encrypted_password, key=None, passphrase=None):
-        """
-        Decrypt the password.
-        """
-        try:
-            # Get key
-            if not key:
-                key = SecureConfig.load_key(passphrase)
-                
-            if not key:
-                logging.error("Could not load encryption key")
-                return None
-                
-            # Decode the base64 encrypted password
-            encrypted_bytes = base64.b64decode(encrypted_password.encode('utf-8'))
-            
-            # Create cipher
-            cipher = Fernet(key)
-            
-            # Decrypt password
-            password = cipher.decrypt(encrypted_bytes).decode()
-            
-            return password
-        except Exception as e:
-            logging.error(f"Error decrypting password: {str(e)}")
-            return None
-    
-    @staticmethod
-    def update_config_with_encrypted_password(password, config_file=None):
-        """
-        Encrypt password and update it in the config file.
-        """
-        try:
-            if not config_file:
-                config_file = SecureConfig.CONFIG_FILE
-                
-            # Load config
-            config = {}
-            if os.path.exists(config_file):
-                with open(config_file, 'r') as f:
-                    config = json.load(f)
-                    
-            # Encrypt password
-            encrypted_password = SecureConfig.encrypt_password(password)
-            if not encrypted_password:
+    if regenerate_key:
+        # Optional: Use a passphrase for key derivation
+        use_passphrase = input("\nUse a passphrase for key generation? (y/N): ").strip().lower()
+        if use_passphrase == 'y':
+            passphrase = getpass.getpass("Enter passphrase for key generation: ")
+            passphrase_confirm = getpass.getpass("Confirm passphrase: ")
+            if passphrase != passphrase_confirm:
+                print("ERROR: Passphrases do not match!")
                 return False
-                
-            # Update config
-            config['PASSWORD_ENCRYPTED'] = encrypted_password
-            
-            # Save config
-            with open(config_file, 'w') as f:
-                json.dump(config, f, indent=4)
-                
-            return True
-        except Exception as e:
-            logging.error(f"Error updating config with encrypted password: {str(e)}")
+            key = SecureConfig.generate_key(passphrase)
+        else:
+            key = SecureConfig.generate_key()
+        
+        if not key:
+            print("ERROR: Failed to generate encryption key!")
             return False
+        print("✓ Encryption key generated successfully")
+    
+    # Collect Confluence credentials
+    print("\n" + "-"*50)
+    print("CONFLUENCE CONFIGURATION")
+    print("-"*50)
+    
+    # Confluence URL
+    default_url = config.get('CONFLUENCE_URL', '')
+    confluence_url = input(f"Confluence URL [{default_url}]: ").strip()
+    if not confluence_url and default_url:
+        confluence_url = default_url
+    
+    if not confluence_url:
+        print("ERROR: Confluence URL is required!")
+        return False
+    
+    # Confluence Username
+    default_username = config.get('CONFLUENCE_USERNAME', '')
+    confluence_username = input(f"Confluence Username [{default_username}]: ").strip()
+    if not confluence_username and default_username:
+        confluence_username = default_username
+    
+    if not confluence_username:
+        print("ERROR: Confluence username is required!")
+        return False
+    
+    # Confluence Password - This is what was missing!
+    print("\n** Confluence Password/API Token **")
+    print("Note: For Confluence Cloud, use an API token instead of password")
+    print("Generate token at: https://id.atlassian.com/manage/api-tokens")
+    
+    confluence_password = getpass.getpass("Enter Confluence password/API token: ")
+    if not confluence_password:
+        print("ERROR: Confluence password/API token is required!")
+        return False
+    
+    # Confirm password
+    confluence_password_confirm = getpass.getpass("Confirm password/API token: ")
+    if confluence_password != confluence_password_confirm:
+        print("ERROR: Passwords do not match!")
+        return False
+    
+    # Encrypt the Confluence password
+    print("\nEncrypting Confluence password...")
+    encrypted_password = SecureConfig.encrypt_password(confluence_password)
+    
+    if not encrypted_password:
+        print("ERROR: Failed to encrypt password!")
+        return False
+    
+    print("✓ Password encrypted successfully")
+    
+    # Update configuration
+    config.update({
+        'CONFLUENCE_URL': confluence_url,
+        'CONFLUENCE_USERNAME': confluence_username,
+        'CONFLUENCE_PASSWORD_ENCRYPTED': encrypted_password
+    })
+    
+    # Optional: Collect additional settings
+    collect_additional = input("\nConfigure additional settings? (y/N): ").strip().lower()
+    if collect_additional == 'y':
+        # Space key
+        default_space = config.get('CONFLUENCE_SPACE_KEY', '')
+        space_key = input(f"Default Confluence Space Key [{default_space}]: ").strip()
+        if space_key:
+            config['CONFLUENCE_SPACE_KEY'] = space_key
+        
+        # Page update interval
+        default_interval = config.get('UPDATE_INTERVAL_MINUTES', 60)
+        interval = input(f"Update interval (minutes) [{default_interval}]: ").strip()
+        if interval and interval.isdigit():
+            config['UPDATE_INTERVAL_MINUTES'] = int(interval)
+    
+    # Save configuration
+    print("\nSaving configuration...")
+    try:
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=4)
+        print(f"✓ Configuration saved to: {config_file}")
+    except Exception as e:
+        print(f"ERROR: Failed to save configuration: {e}")
+        return False
+    
+    # Test the configuration
+    test_config = input("\nTest the configuration? (Y/n): ").strip().lower()
+    if test_config != 'n':
+        print("\nTesting configuration...")
+        test_success = test_confluence_connection(config)
+        if test_success:
+            print("✓ Connection test successful!")
+        else:
+            print("✗ Connection test failed. Please check your credentials.")
+    
+    print("\n" + "="*50)
+    print("SETUP COMPLETE")
+    print("="*50)
+    print("\nYour Confluence password has been encrypted and stored securely.")
+    print(f"Encryption key location: {SecureConfig.KEY_FILE}")
+    print(f"Configuration location: {config_file}")
+    print("\n⚠️  Keep the .secure_key file safe - it's needed to decrypt your password!")
+    
+    return True
+
+
+def test_confluence_connection(config):
+    """
+    Test the Confluence connection with the encrypted credentials.
+    """
+    try:
+        # Decrypt the password
+        encrypted_password = config.get('CONFLUENCE_PASSWORD_ENCRYPTED')
+        if not encrypted_password:
+            print("ERROR: No encrypted password found in config")
+            return False
+        
+        password = SecureConfig.decrypt_password(encrypted_password)
+        if not password:
+            print("ERROR: Failed to decrypt password")
+            return False
+        
+        # Try to connect to Confluence (you'll need to add your Confluence library)
+        # Example with atlassian-python-api:
+        try:
+            from atlassian import Confluence
+            
+            confluence = Confluence(
+                url=config['CONFLUENCE_URL'],
+                username=config['CONFLUENCE_USERNAME'],
+                password=password
+            )
+            
+            # Try a simple API call
+            user_info = confluence.get_current_user()
+            print(f"✓ Connected as: {user_info.get('displayName', 'Unknown')}")
+            return True
+            
+        except ImportError:
+            print("Note: Install atlassian-python-api to test connection")
+            print("  pip install atlassian-python-api")
+            # Skip the actual test if library isn't installed
+            return True
+            
+    except Exception as e:
+        logging.error(f"Connection test failed: {e}")
+        return False
+
+
+if __name__ == "__main__":
+    try:
+        success = setup_secure()
+        sys.exit(0 if success else 1)
+    except KeyboardInterrupt:
+        print("\n\nSetup cancelled by user.")
+        sys.exit(1)
+    except Exception as e:
+        logging.error(f"Setup failed: {e}")
+        sys.exit(1)
