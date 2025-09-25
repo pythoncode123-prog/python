@@ -1,0 +1,614 @@
+<ac:structured-macro ac:name="toc">
+  <ac:parameter ac:name="maxLevel">3</ac:parameter>
+</ac:structured-macro>
+
+<h1>Task Usage Reporting System - Technical Documentation</h1>
+
+<ac:structured-macro ac:name="info">
+  <ac:rich-text-body>
+    <p><strong>Version:</strong> 2.0 | <strong>Last Updated:</strong> September 2025 | <strong>Author:</strong> Technical Team</p>
+    <p>This document provides comprehensive technical documentation for the Task Usage Reporting System, including architecture, configuration, and operational procedures.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>1. System Overview</h2>
+
+<p>The Task Usage Reporting System is an automated data pipeline that collects, processes, and publishes task usage metrics from multiple countries/regions to Confluence. The system supports both database connections and CSV file imports, with automatic aggregation and visualization capabilities.</p>
+
+<ac:structured-macro ac:name="panel">
+  <ac:parameter ac:name="title">Key Features</ac:parameter>
+  <ac:parameter ac:name="borderStyle">solid</ac:parameter>
+  <ac:parameter ac:name="borderColor">#4a6785</ac:parameter>
+  <ac:rich-text-body>
+    <ul>
+      <li><strong>Multi-Country Support:</strong> Process data from multiple countries in a single run</li>
+      <li><strong>Dual Data Sources:</strong> Support for both Oracle database connections and CSV file imports</li>
+      <li><strong>Auto-Discovery:</strong> Automatic detection of CSV files following naming conventions</li>
+      <li><strong>Flexible Scheduling:</strong> Monthly and Daily (YTD) reporting modes</li>
+      <li><strong>Automated Publishing:</strong> Direct publishing to Confluence with charts and tables</li>
+      <li><strong>Secure Credentials:</strong> Encrypted password storage for database and Confluence access</li>
+    </ul>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>2. Architecture Components</h2>
+
+<h3>Core Components</h3>
+<table class="wrapped">
+  <tbody>
+    <tr>
+      <th>Component</th>
+      <th>File</th>
+      <th>Purpose</th>
+    </tr>
+    <tr>
+      <td><strong>Main Orchestrator</strong></td>
+      <td><code>main.py</code></td>
+      <td>Entry point, coordinates workflow execution, handles date ranges</td>
+    </tr>
+    <tr>
+      <td><strong>Workflow Engine</strong></td>
+      <td><code>src/workflow.py</code></td>
+      <td>Manages database connections, query execution, data extraction</td>
+    </tr>
+    <tr>
+      <td><strong>CSV Processor</strong></td>
+      <td><code>lib/csv_processor.py</code></td>
+      <td>Aggregates multiple country CSVs into unified reports</td>
+    </tr>
+    <tr>
+      <td><strong>Confluence Publisher</strong></td>
+      <td><code>lib/confluence_publisher.py</code></td>
+      <td>Creates and publishes HTML reports with charts to Confluence</td>
+    </tr>
+    <tr>
+      <td><strong>Security Manager</strong></td>
+      <td><code>lib/secure_config.py</code></td>
+      <td>Handles encryption/decryption of credentials</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Configuration Files</h3>
+<table class="wrapped">
+  <tbody>
+    <tr>
+      <th>File</th>
+      <th>Purpose</th>
+    </tr>
+    <tr>
+      <td><code>config/config.json</code></td>
+      <td>Confluence settings, baseline values, CSV paths</td>
+    </tr>
+    <tr>
+      <td><code>config/config.ini</code></td>
+      <td>Database connection parameters (single country)</td>
+    </tr>
+    <tr>
+      <td><code>config/countries.json</code></td>
+      <td>Multi-country configuration with DB details</td>
+    </tr>
+    <tr>
+      <td><code>config/query.sql</code></td>
+      <td>Base SQL query template</td>
+    </tr>
+    <tr>
+      <td><code>config/HK_config.ini</code>, <code>UK_config.ini</code></td>
+      <td>Country-specific DB configurations</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>3. Data Flow Architecture</h2>
+
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+┌─────────────────────────────────────────────────────────────┐
+│                         main.py                              │
+│  • Parse arguments (--monthly, --daily, --test)              │
+│  • Set date ranges (Previous Month or YTD)                   │
+│  • Coordinate workflow execution                             │
+└──────────────┬────────────────────────┬─────────────────────┘
+               │                        │
+               ▼                        ▼
+    ┌──────────────────┐      ┌──────────────────┐
+    │ Database Countries│      │   CSV Countries   │
+    │   (workflow.py)   │      │  (Auto-Discovery) │
+    └──────────┬────────┘      └────────┬─────────┘
+               │                         │
+               ▼                         ▼
+    ┌──────────────────┐      ┌──────────────────┐
+    │   Oracle DB       │      │  CSV Files       │
+    │  • Execute SQL    │      │ Pattern:         │
+    │  • Extract data   │      │ CC_USAGEREPORT_  │
+    │                   │      │ YYYYMM.csv       │
+    └──────────┬────────┘      └────────┬─────────┘
+               │                         │
+               └────────────┬────────────┘
+                           │
+                           ▼
+                ┌─────────────────────┐
+                │   CSV Processor      │
+                │ • Aggregate by date  │
+                │ • Add country column │
+                │ • Create reports     │
+                └──────────┬──────────┘
+                           │
+                           ▼
+                ┌─────────────────────┐
+                │ Confluence Publisher │
+                │ • Generate charts    │
+                │ • Create HTML tables │
+                │ • Publish to Space   │
+                └─────────────────────┘
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h2>4. Operating Modes</h2>
+
+<ac:structured-macro ac:name="expand">
+  <ac:parameter ac:name="title">Monthly Mode (--monthly)</ac:parameter>
+  <ac:rich-text-body>
+    <ul>
+      <li><strong>Purpose:</strong> Generate report for the previous completed month</li>
+      <li><strong>Date Range:</strong> First day to last day of previous month</li>
+      <li><strong>Page Title:</strong> "Report Title - [Month Name]"</li>
+      <li><strong>Use Case:</strong> Regular monthly reporting after month close</li>
+      <li><strong>Example:</strong> Running in September generates August report</li>
+    </ul>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="expand">
+  <ac:parameter ac:name="title">Daily/YTD Mode (--daily)</ac:parameter>
+  <ac:rich-text-body>
+    <ul>
+      <li><strong>Purpose:</strong> Generate Year-to-Date report through current date</li>
+      <li><strong>Date Range:</strong> January 1st to current date</li>
+      <li><strong>Page Title:</strong> "Report Title - [Current Month] YTD"</li>
+      <li><strong>CSV Handling:</strong> Aggregates all monthly CSV files from January to current month</li>
+      <li><strong>Use Case:</strong> Daily monitoring, mid-month reviews</li>
+    </ul>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="expand">
+  <ac:parameter ac:name="title">Test Mode (--test)</ac:parameter>
+  <ac:rich-text-body>
+    <ul>
+      <li><strong>Purpose:</strong> Validate workflow with synthetic data</li>
+      <li><strong>Behavior:</strong> Generates dummy data instead of querying databases</li>
+      <li><strong>Page Title:</strong> Appends "-TEST" to prevent overwriting production</li>
+    </ul>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>5. Data Source Configuration</h2>
+
+<h3>Database Countries</h3>
+<p>Configure in <code>countries.json</code>:</p>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">json</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+{
+  "countries": [
+    {
+      "name": "HK",
+      "config_file": "config/HK_config.ini",
+      "query_file": "config/query.sql"
+    },
+    {
+      "name": "UK",
+      "config_file": "config/UK_config.ini",
+      "query_file": "config/query.sql"
+    }
+  ]
+}
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h3>CSV File Countries</h3>
+
+<ac:structured-macro ac:name="numbered-headings">
+  <ac:rich-text-body>
+    <ol>
+      <li>Set path in <code>config.json</code>:
+        <ac:structured-macro ac:name="code">
+          <ac:parameter ac:name="language">json</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+{
+  "CSV_COUNTRIES_PATH": "C:/path/to/csv/files"
+}
+          ]]></ac:plain-text-body>
+        </ac:structured-macro>
+      </li>
+      <li>File naming convention:
+        <ul>
+          <li>Pattern: <code>{COUNTRY_CODE}_USAGEREPORT_{YYYYMM}.csv</code></li>
+          <li>Example: <code>MX_USAGEREPORT_202509.csv</code></li>
+        </ul>
+      </li>
+      <li>Auto-discovery automatically finds and processes matching files</li>
+    </ol>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>6. Execution Commands</h2>
+
+<ac:structured-macro ac:name="panel">
+  <ac:parameter ac:name="title">Single Country Mode</ac:parameter>
+  <ac:rich-text-body>
+    <ac:structured-macro ac:name="code">
+      <ac:parameter ac:name="language">bash</ac:parameter>
+      <ac:plain-text-body><![CDATA[
+# Previous month report
+python main.py --monthly
+
+# Year-to-date report
+python main.py --daily
+
+# Test mode
+python main.py --test
+      ]]></ac:plain-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="panel">
+  <ac:parameter ac:name="title">Multi-Country Mode</ac:parameter>
+  <ac:rich-text-body>
+    <ac:structured-macro ac:name="code">
+      <ac:parameter ac:name="language">bash</ac:parameter>
+      <ac:plain-text-body><![CDATA[
+# Monthly report for all countries
+python main.py --monthly --countries-config config/countries.json
+
+# YTD report for all countries
+python main.py --daily --countries-config config/countries.json
+
+# Skip Confluence publishing
+python main.py --monthly --countries-config config/countries.json --no-publish
+      ]]></ac:plain-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="panel">
+  <ac:parameter ac:name="title">CSV Operations</ac:parameter>
+  <ac:rich-text-body>
+    <ac:structured-macro ac:name="code">
+      <ac:parameter ac:name="language">bash</ac:parameter>
+      <ac:plain-text-body><![CDATA[
+# List available CSV countries
+python main.py --list-csv-countries
+
+# Process only CSV countries
+python main.py --csv-countries-only --monthly
+
+# Specify target month
+python main.py --monthly --target-month 202508
+      ]]></ac:plain-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>7. Output Structure</h2>
+
+<h3>Directory Organization</h3>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+reports/
+├── 2025-09-17/          # First run of the day
+│   ├── data_hk.csv      # Individual country data
+│   ├── data_uk.csv
+│   ├── data_mx.csv
+│   └── task_usage_report_by_region.csv  # Aggregated report
+├── 2025-09-17_2/        # Second run of the day
+└── 2025-09-17_3/        # Third run of the day
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h3>Report Files</h3>
+<table class="wrapped">
+  <tbody>
+    <tr>
+      <th>File</th>
+      <th>Description</th>
+    </tr>
+    <tr>
+      <td><code>data_{country}.csv</code></td>
+      <td>Individual country data with NET_DATE and TOTAL_JOBS</td>
+    </tr>
+    <tr>
+      <td><code>task_usage_report_by_region.csv</code></td>
+      <td>Aggregated data with DATE, COUNTRY, TOTAL_JOBS</td>
+    </tr>
+    <tr>
+      <td><code>task_usage_report.csv</code></td>
+      <td>Detailed report with all metrics</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>8. Confluence Report Structure</h2>
+
+<ac:structured-macro ac:name="panel">
+  <ac:parameter ac:name="borderStyle">solid</ac:parameter>
+  <ac:parameter ac:name="borderColor">#4a6785</ac:parameter>
+  <ac:rich-text-body>
+    <ol>
+      <li><strong>Header Information</strong>
+        <ul>
+          <li>Last updated timestamp</li>
+          <li>Generated by user</li>
+          <li>Data coverage period</li>
+          <li>Report mode (Monthly/YTD)</li>
+        </ul>
+      </li>
+      <li><strong>Jobs Data Table</strong>
+        <ul>
+          <li>Top 4 peak days</li>
+          <li>Baseline comparison</li>
+          <li>Variation analysis (green/red indicators)</li>
+        </ul>
+      </li>
+      <li><strong>Peak Comparison Chart</strong>
+        <ul>
+          <li>Bar chart comparing top peaks against baseline</li>
+          <li>3D visualization with color coding</li>
+        </ul>
+      </li>
+      <li><strong>Monthly Usage Chart</strong>
+        <ul>
+          <li>Line chart showing daily trends</li>
+          <li>Baseline reference line</li>
+        </ul>
+      </li>
+      <li><strong>Country Breakdown</strong> (YTD mode only)
+        <ul>
+          <li>Stacked bar chart by month and country</li>
+          <li>Summary table with totals</li>
+        </ul>
+      </li>
+      <li><strong>Country Summary</strong>
+        <ul>
+          <li>Total jobs per country</li>
+          <li>Percentage distribution</li>
+        </ul>
+      </li>
+    </ol>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>9. Security Configuration</h2>
+
+<h3>Database Credentials</h3>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+# Setup encrypted config
+python setup_secure_config.py
+
+# Or use environment variable
+export DB_PASSWORD="your_password"
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h3>Confluence Authentication</h3>
+<ac:structured-macro ac:name="code">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[
+# Environment variable (recommended)
+export CONFLUENCE_PASSWORD="your_api_token"
+
+# Or encrypted in config.json
+{
+  "PASSWORD_ENCRYPTED": "encrypted_string"
+}
+  ]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h2>10. Troubleshooting Guide</h2>
+
+<h3>Common Issues and Solutions</h3>
+<table class="wrapped">
+  <tbody>
+    <tr>
+      <th>Issue</th>
+      <th>Cause</th>
+      <th>Solution</th>
+    </tr>
+    <tr>
+      <td>"No CSV countries found"</td>
+      <td>Wrong path or file naming</td>
+      <td>Check CSV_COUNTRIES_PATH and file pattern</td>
+    </tr>
+    <tr>
+      <td>"Query date range not found"</td>
+      <td>SQL format mismatch</td>
+      <td>Verify BETWEEN TO_DATE pattern in query.sql</td>
+    </tr>
+    <tr>
+      <td>"datetime has no attribute timedelta"</td>
+      <td>Import missing</td>
+      <td>Add <code>from datetime import timedelta</code></td>
+    </tr>
+    <tr>
+      <td>"Folder already exists"</td>
+      <td>Multiple runs same day</td>
+      <td>System auto-creates numbered folders</td>
+    </tr>
+    <tr>
+      <td>"Authentication failed"</td>
+      <td>Invalid credentials</td>
+      <td>Run setup_secure_config.py or check env vars</td>
+    </tr>
+    <tr>
+      <td>"No data for month"</td>
+      <td>Date filtering issue</td>
+      <td>Check target_month format (YYYYMM)</td>
+    </tr>
+  </tbody>
+</table>
+
+<ac:structured-macro ac:name="warning">
+  <ac:rich-text-body>
+    <p><strong>Log Files:</strong></p>
+    <ul>
+      <li>Location: <code>workflow_YYYYMMDD_HHMMSS.log</code></li>
+      <li>Contains detailed execution trace</li>
+      <li>Check for ERROR and WARNING messages</li>
+    </ul>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h3>Validation Checklist</h3>
+<ac:structured-macro ac:name="tasklist">
+  <ac:rich-text-body>
+    <ac:task>
+      <ac:task-body>Database connectivity (tnsping)</ac:task-body>
+    </ac:task>
+    <ac:task>
+      <ac:task-body>CSV files follow naming convention</ac:task-body>
+    </ac:task>
+    <ac:task>
+      <ac:task-body>Confluence space and page permissions</ac:task-body>
+    </ac:task>
+    <ac:task>
+      <ac:task-body>Date ranges in SQL query</ac:task-body>
+    </ac:task>
+    <ac:task>
+      <ac:task-body>config.json has all required keys</ac:task-body>
+    </ac:task>
+    <ac:task>
+      <ac:task-body>Environment variables set (if used)</ac:task-body>
+    </ac:task>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>11. Advanced Features</h2>
+
+<ac:structured-macro ac:name="expand">
+  <ac:parameter ac:name="title">Custom Date Ranges</ac:parameter>
+  <ac:rich-text-body>
+    <p>Modify date range calculation in <code>main.py</code>:</p>
+    <ac:structured-macro ac:name="code">
+      <ac:parameter ac:name="language">python</ac:parameter>
+      <ac:plain-text-body><![CDATA[
+def get_custom_date_range():
+    # Your custom logic here
+    return start_date, end_date
+      ]]></ac:plain-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="expand">
+  <ac:parameter ac:name="title">Adding New Countries</ac:parameter>
+  <ac:rich-text-body>
+    <ol>
+      <li>For database: Add to <code>countries.json</code></li>
+      <li>For CSV: Place files in CSV_COUNTRIES_PATH</li>
+      <li>System auto-discovers and includes in reports</li>
+    </ol>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="expand">
+  <ac:parameter ac:name="title">Baseline Adjustment</ac:parameter>
+  <ac:rich-text-body>
+    <p>Update in <code>config.json</code>:</p>
+    <ac:structured-macro ac:name="code">
+      <ac:parameter ac:name="language">json</ac:parameter>
+      <ac:plain-text-body><![CDATA[
+{
+  "BASELINE": 1899206
+}
+      ]]></ac:plain-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>12. Maintenance Tasks</h2>
+
+<ac:structured-macro ac:name="panel">
+  <ac:parameter ac:name="title">Regular Tasks</ac:parameter>
+  <ac:parameter ac:name="borderStyle">solid</ac:parameter>
+  <ac:rich-text-body>
+    <table class="wrapped">
+      <tbody>
+        <tr>
+          <th>Frequency</th>
+          <th>Task</th>
+        </tr>
+        <tr>
+          <td><strong>Weekly</strong></td>
+          <td>Review log files for warnings</td>
+        </tr>
+        <tr>
+          <td><strong>Monthly</strong></td>
+          <td>Archive old report folders</td>
+        </tr>
+        <tr>
+          <td><strong>Quarterly</strong></td>
+          <td>Update baseline if needed</td>
+        </tr>
+        <tr>
+          <td><strong>Yearly</strong></td>
+          <td>Clean up backup query files (.bak)</td>
+        </tr>
+      </tbody>
+    </table>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="panel">
+  <ac:parameter ac:name="title">Performance Optimization</ac:parameter>
+  <ac:rich-text-body>
+    <ul>
+      <li>Use connection pooling for multiple DB queries</li>
+      <li>Implement parallel processing for country extraction</li>
+      <li>Archive historical reports to reduce directory size</li>
+      <li>Index Confluence pages for faster updates</li>
+    </ul>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>13. Quick Reference</h2>
+
+<ac:structured-macro ac:name="info">
+  <ac:parameter ac:name="title">Most Common Commands</ac:parameter>
+  <ac:rich-text-body>
+    <ac:structured-macro ac:name="code">
+      <ac:parameter ac:name="language">bash</ac:parameter>
+      <ac:plain-text-body><![CDATA[
+# Generate previous month report for all countries
+python main.py --monthly --countries-config config/countries.json
+
+# Generate YTD report for all countries
+python main.py --daily --countries-config config/countries.json
+
+# Test the system
+python main.py --test --countries-config config/countries.json
+
+# Check available CSV files
+python main.py --list-csv-countries
+      ]]></ac:plain-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<hr />
+
+<ac:structured-macro ac:name="panel">
+  <ac:parameter ac:name="borderStyle">solid</ac:parameter>
+  <ac:parameter ac:name="borderColor">#205081</ac:parameter>
+  <ac:rich-text-body>
+    <p><strong>Document Version:</strong> 1.0<br/>
+    <strong>Last Updated:</strong> September 2025<br/>
+    <strong>System Version:</strong> Task Usage Reporting v2.0<br/>
+    <strong>Maintained By:</strong> Technical Team</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
